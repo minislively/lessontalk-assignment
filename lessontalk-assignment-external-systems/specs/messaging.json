@@ -1,0 +1,330 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "MESSAGING 발송 API",
+    "version": "1.0.0",
+    "description": "**외부 메시지 발송 대행.** 수집 벤더가 아니라 호출자가 발송을 위탁하는 서비스입니다.\n\n이 서비스의 계약은 네 가지입니다.\n\n1. **202** 는 접수됐다는 뜻이고 수신자에게 도달했다는 뜻이 아닙니다. 도달 여부는 잠시 뒤 **GET /messages/{messageId}** 로 확인해야 하고, 접수된 건의 일부는 결국 **FAILED** 로 끝납니다.\n2. 중복을 걸러 주지 않습니다. 같은 건을 두 번 접수하면 수신자가 두 번 받고, 접수 로그에도 두 번 남습니다. 중복 방지는 전적으로 호출자의 책임입니다.\n3. 접수 응답에 0~300ms 지연이 있을 수 있고 확률적으로 502 를 반환합니다. 502 는 접수되지 않은 것이라 로그에도 남지 않습니다. timeout 과 재시도는 호출자가 설계해야 합니다.\n4. 상태는 **ACCEPTED** 로 시작해 수십 초 안에 **DELIVERED** 또는 **FAILED** 로 확정됩니다. **FAILED** 는 수신자가 받지 못한 것이므로 재발송은 중복이 아닙니다.\n\n**referenceKey** 는 해석하지 않고 접수 로그에 그대로 되돌려 주는 문자열입니다. 호출자가 자기 쪽 식별자(예: 레슨 ID)를 실어 두면 나중에 자기 발송 이력과 대조할 수 있습니다.\n\n**GET /health** 와 preflight(OPTIONS) 는 502 에서 면제됩니다. 본문이 1MB 를 넘으면 413 입니다."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8804"
+    }
+  ],
+  "paths": {
+    "/messages": {
+      "post": {
+        "summary": "발송 접수",
+        "description": "메시지 발송을 접수합니다. 접수 즉시 발송을 시작하지만, 이 응답은 접수증일 뿐입니다.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "recipientPhone",
+                  "message"
+                ],
+                "properties": {
+                  "recipientPhone": {
+                    "type": "string",
+                    "description": "수신자 전화. 숫자·하이픈·공백·선행 + 로 이루어진 9~15자리여야 합니다. 표기 정규화는 호출자 몫입니다.",
+                    "example": "01000003059"
+                  },
+                  "message": {
+                    "type": "string",
+                    "description": "발송 본문. 비어 있거나 공백뿐이면 400",
+                    "example": "[레슨톡] 오늘 12:30 레슨이 종료되었습니다."
+                  },
+                  "referenceKey": {
+                    "type": "string",
+                    "description": "선택. 문자열이어야 하고, 해석되지 않고 접수 로그에 그대로 남습니다",
+                    "example": "lesson-A100003"
+                  }
+                }
+              },
+              "example": {
+                "recipientPhone": "01000003059",
+                "message": "[레슨톡] 오늘 12:30 레슨이 종료되었습니다.",
+                "referenceKey": "lesson-A100003"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "접수됨. 수신자 도달은 보장하지 않고, 도달 여부는 GET /messages/{messageId} 로 확인합니다",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "messageId": {
+                      "type": "string",
+                      "description": "접수 건 식별자. 도달 여부 조회에 사용합니다.",
+                      "example": "M900123"
+                    },
+                    "acceptedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "example": "{{TODAY}}T03:12:47.882Z"
+                    }
+                  }
+                },
+                "example": {
+                  "messageId": "M900123",
+                  "acceptedAt": "{{TODAY}}T03:12:47.882Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "전화 형식 오류 또는 message 누락",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "recipientPhone(전화형식), message(공백이 아닌 문자열)가 필요하고 referenceKey 는 문자열이어야 합니다"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "확률적 실패. 접수되지 않았으므로 재시도 대상이고 로그에도 남지 않습니다. 단, 재시도가 중복 접수를 만들지 않게 하는 것은 호출자 몫입니다"
+          },
+          "413": {
+            "description": "본문이 1MB 를 넘음",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "본문이 너무 큽니다"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "접수 로그 조회",
+        "description": "접수된 모든 발송 건을 접수 순으로 반환합니다. 중복 접수는 중복으로 보입니다. **pageInfo.totalCount** 로 전체 건수를 알 수 있고, 각 건의 도달 여부(**status**)도 함께 실립니다.",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "1 이상의 정수. 생략하면 1. 20건씩 나옵니다",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "list",
+                    "pageInfo"
+                  ],
+                  "properties": {
+                    "list": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Message"
+                      }
+                    },
+                    "pageInfo": {
+                      "type": "object",
+                      "required": [
+                        "totalPage",
+                        "totalCount"
+                      ],
+                      "properties": {
+                        "totalPage": {
+                          "type": "integer",
+                          "example": 3
+                        },
+                        "totalCount": {
+                          "type": "integer",
+                          "description": "지금까지 접수된 전체 건수",
+                          "example": 47
+                        }
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "list": [
+                    {
+                      "messageId": "M900123",
+                      "recipientPhone": "01000003059",
+                      "message": "[레슨톡] 오늘 12:30 레슨이 종료되었습니다.",
+                      "referenceKey": "lesson-A100003",
+                      "acceptedAt": "{{TODAY}}T03:12:47.882Z",
+                      "status": "DELIVERED",
+                      "resolvedAt": "{{TODAY}}T03:13:02.104Z",
+                      "failureReason": null
+                    }
+                  ],
+                  "pageInfo": {
+                    "totalPage": 3,
+                    "totalCount": 47
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "page 형식 오류",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "page must be a positive integer"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "확률적 실패. 재시도 대상입니다"
+          }
+        }
+      }
+    },
+    "/messages/{messageId}": {
+      "get": {
+        "summary": "발송 결과 조회",
+        "description": "접수한 건의 도달 여부를 조회합니다. 접수 직후에는 **ACCEPTED** 이고 수십 초 안에 **DELIVERED** 또는 **FAILED** 로 확정됩니다.\n\n**FAILED** 는 수신자가 받지 못한 것이니 다시 보내는 것이 맞고, 이 재발송은 중복으로 보지 않습니다. 반대로 **ACCEPTED** 를 실패로 간주해 다시 보내면 수신자가 두 번 받습니다.",
+        "parameters": [
+          {
+            "name": "messageId",
+            "in": "path",
+            "required": true,
+            "description": "접수 응답의 messageId",
+            "schema": {
+              "type": "string",
+              "example": "M900123"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "example": {
+                  "messageId": "M900123",
+                  "recipientPhone": "01000003059",
+                  "message": "[레슨톡] 오늘 12:30 레슨이 종료되었습니다.",
+                  "referenceKey": "lesson-A100003",
+                  "acceptedAt": "{{TODAY}}T03:12:47.882Z",
+                  "status": "FAILED",
+                  "resolvedAt": "{{TODAY}}T03:13:04.551Z",
+                  "failureReason": "CARRIER_REJECTED"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Message"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "존재하지 않는 messageId",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "unknown messageId"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "확률적 실패. 재시도 대상입니다"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "상태 확인 (502 면제)",
+        "responses": {
+          "200": {
+            "description": "항상 200",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "ok"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Message": {
+        "type": "object",
+        "required": [
+          "messageId",
+          "recipientPhone",
+          "message",
+          "acceptedAt",
+          "status"
+        ],
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "example": "M900123"
+          },
+          "recipientPhone": {
+            "type": "string",
+            "example": "01000003059"
+          },
+          "message": {
+            "type": "string",
+            "example": "[레슨톡] 오늘 12:30 레슨이 종료되었습니다."
+          },
+          "referenceKey": {
+            "type": "string",
+            "nullable": true,
+            "description": "접수 시 실어 보낸 값. 보내지 않았으면 null",
+            "example": "lesson-A100003"
+          },
+          "acceptedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "{{TODAY}}T03:12:47.882Z"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACCEPTED",
+              "DELIVERED",
+              "FAILED"
+            ],
+            "description": "ACCEPTED 는 아직 확정되지 않은 상태입니다",
+            "example": "DELIVERED"
+          },
+          "resolvedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "DELIVERED·FAILED 로 확정된 시각. ACCEPTED 면 null",
+            "example": "{{TODAY}}T03:13:02.104Z"
+          },
+          "failureReason": {
+            "type": "string",
+            "nullable": true,
+            "description": "FAILED 인 경우의 사유",
+            "example": null
+          }
+        }
+      }
+    }
+  }
+}

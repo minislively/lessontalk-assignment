@@ -1,0 +1,28 @@
+services:
+  external-systems:
+    build: .
+    container_name: lessontalk-assignment-external-systems
+    init: true
+    ports:
+      - "8800:8800"
+      - "8801:8801"
+      - "8802:8802"
+      - "8803:8803"
+      - "8804:8804"
+    volumes:
+      # config 를 호스트와 공유해 재빌드 없이 설정을 바꿀 수 있게 한다.
+      # 파일 하나만 마운트하면 에디터의 원자적 저장(임시 파일 후 rename)에 끊기므로
+      # 디렉터리째 마운트한다. 서버는 읽기만 하므로 읽기 전용으로 붙인다.
+      - ./config:/app/config:ro
+    networks:
+      - lessontalk
+    restart: unless-stopped
+
+networks:
+  # 여러분의 서비스를 별도 compose 로 띄운다면 이 네트워크에 붙으세요.
+  #   networks:
+  #     lessontalk:
+  #       external: true
+  # 붙고 나면 컨테이너 안에서 http://external-systems:8801 로 호출할 수 있습니다.
+  lessontalk:
+    name: lessontalk

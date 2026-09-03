@@ -1,0 +1,17 @@
+{
+  "name": "lessontalk-assignment-external-systems",
+  "version": "1.0.0",
+  "private": true,
+  "description": "레슨톡 과제 — 외부 시스템 모의 서버 (수정 금지)",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start:external-systems": "node index.mjs",
+    "test:sample": "vitest run fetch-external-systems.spec.ts"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  }
+}

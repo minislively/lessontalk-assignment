@@ -1,0 +1,11 @@
+{
+  "vendorFailRate": 0.15,
+  "messagingFailRate": 0.15,
+  "messagingDeliveryFailRate": 0.1,
+  "messagingDeliveryDelayMs": 15000,
+  "storesPerVendor": 6,
+  "mutateIntervalMs": 300000,
+  "mutateTriggerMax": 0.3,
+  "mutatePortionMax": 0.03,
+  "vanishShareOfCancel": 0.35
+}

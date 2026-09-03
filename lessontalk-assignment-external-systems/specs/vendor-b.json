@@ -1,0 +1,136 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "VENDOR_B 예약 API",
+    "version": "1.0.0",
+    "description": "**XML 벤더.** 세 벤더 중 가장 오래된 방식입니다. 응답이 XML 이고, 총 페이지 수를 알려주지 않으며, 체크인 개념이 없습니다.\n\n**사용 흐름**\n**GET /stores** 로 매장 목록을 받고, 매장×날짜마다 **GET /bookings?shopCode=…&searchDate=YYYYMMDD&page=1** 부터 **hasNextPage** 가 **false** 가 될 때까지 순회합니다. 총 페이지 수는 제공하지 않습니다.\n\n요청의 **searchDate** 는 하이픈이 없는 **YYYYMMDD** 인데 응답의 **lessonDate** 는 **yyyy-MM-dd** 입니다. 요청과 응답의 날짜 표기가 다릅니다.\n\n**데이터 특성**\n- 전화 표기: 하이픈 없음 (**01012345678**). 회원 **custPhone**, 프로(강사) **proPhone**\n- 시각: 날짜(**lessonDate**)와 시작(**beginTime**)·종료(**finishTime**)가 분리된 필드입니다. 시간대 표기가 없으니 한국 시간으로 해석하세요\n- 상태: **cancelYn** 하나뿐입니다. 행이 있으면 예약이고 **Y** 면 취소입니다. 체크인은 이 벤더에서 알 수 없습니다\n- 페이지 크기: 5건 고정 (셋 중 가장 작음)\n\n**booking 요소**\n\n| 요소 | 의미 | 예시 |\n|---|---|---|\n| bookingNo | 예약 식별자. 이 벤더 안에서만 유일합니다 | B100482 |\n| shopCode | 매장 식별자 | 7701 |\n| custName | 회원 이름. 표기가 흔들릴 수 있습니다 | 김민준 |\n| custPhone | 회원 전화 | 01000003021 |\n| lessonDate | 레슨 날짜 | {{TODAY}} |\n| beginTime | 시작 시각 | 14:30 |\n| finishTime | 종료 시각 | 14:45 |\n| proName | 프로(강사) 이름 | 신프로 |\n| proPhone | 프로(강사) 전화 | 01090000539 |\n| cancelYn | Y 면 취소, N 이면 예약 | N |\n\n**시간에 따른 변화**\n이 벤더는 계속 운영 중입니다. 새 예약이 들어오고, 예약 시각이 바뀌고, 취소됩니다. 취소는 상태값이 바뀌는 형태로 나타나기도 하고, **행이 목록에서 그냥 사라지는 형태**로 나타나기도 합니다. 사라진 행은 같은 매장·날짜를 다시 조회해도 오지 않습니다.\n\n**데이터가 있는 구간**\n날짜는 아무 값이나 조회할 수 있지만, 예약이 실제로 있는 구간은 오늘과 내일 이틀뿐입니다. 어제 이전과 모레 이후는 정상 응답에 빈 목록으로 옵니다.\n\n모든 엔드포인트는 확률적으로 502 를 반환합니다. **GET /health** 와 preflight(OPTIONS) 만 면제입니다. 선언되지 않은 경로·메서드는 404 입니다."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8802"
+    }
+  ],
+  "paths": {
+    "/stores": {
+      "get": {
+        "summary": "매장 목록 (XML)",
+        "description": "**shopCode** 가 예약 조회의 필수 입력입니다.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<result>\n  <list>\n    <store>\n      <shopCode>7701</shopCode>\n      <shopName>페어웨이 랩</shopName>\n    </store>\n    <store>\n      <shopCode>7702</shopCode>\n      <shopName>밸런스룸</shopName>\n    </store>\n  </list>\n</result>"
+              }
+            }
+          },
+          "502": {
+            "description": "확률적 실패. 재시도 대상입니다"
+          }
+        }
+      }
+    },
+    "/bookings": {
+      "get": {
+        "summary": "매장×날짜 단위 예약 목록 (XML)",
+        "description": "지정한 매장의 지정한 날짜 예약을 5건씩 반환합니다. 총 페이지 수를 미리 알 수 없으니 순회 종료 조건을 응답의 **hasNextPage** 에서 읽어야 합니다. 예약이 없으면 빈 목록에 **hasNextPage** 가 **false** 입니다.",
+        "parameters": [
+          {
+            "name": "shopCode",
+            "in": "query",
+            "required": true,
+            "description": "**GET /stores** 응답의 **shopCode**. 누락 시 400, 존재하지 않는 값은 404.",
+            "schema": {
+              "type": "string",
+              "example": "7701"
+            }
+          },
+          {
+            "name": "searchDate",
+            "in": "query",
+            "required": true,
+            "description": "조회할 레슨 날짜, 하이픈 없는 **YYYYMMDD**. 응답의 **lessonDate** 표기와 다릅니다. 누락·형식 오류·달력에 없는 날짜는 400.",
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{8}$",
+              "example": "{{TODAY_COMPACT}}"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "1 이상의 정수. 생략하면 1. **hasNextPage** 가 **true** 인 동안 증가시키며 순회하세요.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<result>\n  <list>\n    <booking>\n      <bookingNo>B100482</bookingNo>\n      <shopCode>7701</shopCode>\n      <custName>김민준</custName>\n      <custPhone>01000003021</custPhone>\n      <lessonDate>{{TODAY}}</lessonDate>\n      <beginTime>14:30</beginTime>\n      <finishTime>14:45</finishTime>\n      <proName>신프로</proName>\n      <proPhone>01090000539</proPhone>\n      <cancelYn>N</cancelYn>\n    </booking>\n    <booking>\n      <bookingNo>B100486</bookingNo>\n      <shopCode>7701</shopCode>\n      <custName>이유나 </custName>\n      <custPhone>01000003127</custPhone>\n      <lessonDate>{{TODAY}}</lessonDate>\n      <beginTime>10:00</beginTime>\n      <finishTime>10:20</finishTime>\n      <proName>권코치</proName>\n      <proPhone>01090000542</proPhone>\n      <cancelYn>Y</cancelYn>\n    </booking>\n  </list>\n  <hasNextPage>true</hasNextPage>\n</result>"
+              }
+            }
+          },
+          "400": {
+            "description": "shopCode·searchDate 누락 또는 형식 오류",
+            "content": {
+              "application/xml": {
+                "examples": {
+                  "shopCode 누락": {
+                    "value": "<error>shopCode 쿼리가 필요합니다</error>"
+                  },
+                  "page 형식 오류": {
+                    "value": "<error>page must be a positive integer</error>"
+                  },
+                  "searchDate 누락·형식 오류": {
+                    "value": "<error>searchDate 쿼리가 필요합니다 (YYYYMMDD)</error>"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "존재하지 않는 shopCode",
+            "content": {
+              "application/xml": {
+                "example": "<error>unknown shopCode</error>"
+              }
+            }
+          },
+          "502": {
+            "description": "확률적 실패. 재시도 대상입니다"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "상태 확인 (502 면제)",
+        "responses": {
+          "200": {
+            "description": "항상 200",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "ok"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

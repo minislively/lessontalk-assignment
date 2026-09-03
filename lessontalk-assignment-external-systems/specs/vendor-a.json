@@ -1,0 +1,317 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "VENDOR_A 예약 API",
+    "version": "1.0.0",
+    "description": "**JSON(camelCase) 벤더.** 세 벤더 중 가장 풍부한 정보를 내려줍니다. 회원과 프로(강사)의 식별자, 프로(강사) 전화번호까지 제공합니다.\n\n**사용 흐름**\n**GET /stores** 로 매장 목록을 받고, 매장×날짜마다 **GET /bookings?storeId=…&date=YYYY-MM-DD&page=1** 부터 **pageInfo.totalPage** 까지 증가시키며 순회합니다. 매장이나 날짜 없이 전체를 한 번에 받을 수는 없습니다.\n\n**데이터 특성**\n- 전화 표기: 하이픈 포함 (**010-1234-5678**). 회원 **memberPhone**, 프로(강사) **instructorPhone**\n- 시각: 시작·종료 모두 ISO8601 에 **+09:00** 오프셋 (**startAt**, **endAt**)\n- 상태: **RESERVED**(예약) / **CHECKED_IN**(체크인) / **CANCELED**(취소)\n- 페이지 크기: 10건 고정\n\n**시간에 따른 변화**\n이 벤더는 계속 운영 중입니다. 새 예약이 들어오고, 예약 시각이 바뀌고, 취소됩니다. 취소는 상태값이 바뀌는 형태로 나타나기도 하고, **행이 목록에서 그냥 사라지는 형태**로 나타나기도 합니다. 사라진 행은 같은 매장·날짜를 다시 조회해도 오지 않습니다.\n\n**데이터가 있는 구간**\n날짜는 아무 값이나 조회할 수 있지만, 예약이 실제로 있는 구간은 오늘과 내일 이틀뿐입니다. 어제 이전과 모레 이후는 정상 응답에 빈 목록으로 옵니다.\n\n모든 엔드포인트는 확률적으로 502 를 반환합니다. **GET /health** 와 preflight(OPTIONS) 만 면제입니다. 선언되지 않은 경로·메서드는 404 입니다."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8801"
+    }
+  ],
+  "paths": {
+    "/stores": {
+      "get": {
+        "summary": "매장 목록",
+        "description": "이 벤더에 등록된 전체 매장. **storeId** 가 예약 조회의 필수 입력입니다.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoresResponse"
+                },
+                "example": {
+                  "list": [
+                    {
+                      "storeId": "A-1001",
+                      "storeName": "그린힐 골프아카데미"
+                    },
+                    {
+                      "storeId": "A-1002",
+                      "storeName": "스윙업 스튜디오"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "확률적 실패. 재시도 대상입니다"
+          }
+        }
+      }
+    },
+    "/bookings": {
+      "get": {
+        "summary": "매장×날짜 단위 예약 목록",
+        "description": "지정한 매장의 지정한 날짜 예약을 페이지 단위로 반환합니다. 해당 날짜에 예약이 없으면 빈 목록이 오고, 이때 **totalPage** 는 1 입니다.",
+        "parameters": [
+          {
+            "name": "storeId",
+            "in": "query",
+            "required": true,
+            "description": "**GET /stores** 응답의 **storeId**. 누락 시 400, 존재하지 않는 값은 404.",
+            "schema": {
+              "type": "string",
+              "example": "A-1001"
+            }
+          },
+          {
+            "name": "date",
+            "in": "query",
+            "required": true,
+            "description": "조회할 레슨 날짜, **YYYY-MM-DD**. 누락·형식 오류·달력에 없는 날짜는 400.",
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "example": "{{TODAY}}"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "1 이상의 정수. 생략하면 1. **pageInfo.totalPage** 까지 증가시키며 순회하세요. 정수가 아니면 400.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingsResponse"
+                },
+                "example": {
+                  "list": [
+                    {
+                      "bookingId": "A100003",
+                      "storeId": "A-1001",
+                      "memberId": "U20024",
+                      "memberName": "조도윤",
+                      "memberPhone": "010-0000-3059",
+                      "startAt": "{{TODAY}}T12:30:00+09:00",
+                      "endAt": "{{TODAY}}T12:45:00+09:00",
+                      "instructorId": "T503",
+                      "instructorName": "박프로",
+                      "instructorPhone": "010-9000-0503",
+                      "status": "RESERVED"
+                    },
+                    {
+                      "bookingId": "A100007",
+                      "storeId": "A-1001",
+                      "memberId": "U20011",
+                      "memberName": "(J)한소율",
+                      "memberPhone": "010-0000-3037",
+                      "startAt": "{{TODAY}}T18:00:00+09:00",
+                      "endAt": "{{TODAY}}T18:20:00+09:00",
+                      "instructorId": "T506",
+                      "instructorName": "김프로",
+                      "instructorPhone": "010-9000-0506",
+                      "status": "CANCELED"
+                    }
+                  ],
+                  "pageInfo": {
+                    "totalPage": 3
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "storeId·date 누락 또는 형식 오류",
+            "content": {
+              "application/json": {
+                "examples": {
+                  "storeId 누락": {
+                    "value": {
+                      "message": "storeId 쿼리가 필요합니다"
+                    }
+                  },
+                  "page 형식 오류": {
+                    "value": {
+                      "message": "page must be a positive integer"
+                    }
+                  },
+                  "date 누락·형식 오류": {
+                    "value": {
+                      "message": "date 쿼리가 필요합니다 (YYYY-MM-DD)"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "존재하지 않는 storeId",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "unknown storeId"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "확률적 실패. 재시도 대상입니다"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "상태 확인 (502 면제)",
+        "responses": {
+          "200": {
+            "description": "항상 200",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "ok"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Store": {
+        "type": "object",
+        "properties": {
+          "storeId": {
+            "type": "string",
+            "description": "예약 조회에 쓰는 매장 식별자",
+            "example": "A-1001"
+          },
+          "storeName": {
+            "type": "string",
+            "example": "그린힐 골프아카데미"
+          }
+        },
+        "required": [
+          "storeId",
+          "storeName"
+        ]
+      },
+      "StoresResponse": {
+        "type": "object",
+        "properties": {
+          "list": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Store"
+            }
+          }
+        }
+      },
+      "Booking": {
+        "type": "object",
+        "properties": {
+          "bookingId": {
+            "type": "string",
+            "description": "이 벤더 안에서만 유일한 예약 식별자",
+            "example": "A100003"
+          },
+          "storeId": {
+            "type": "string",
+            "example": "A-1001"
+          },
+          "memberId": {
+            "type": "string",
+            "description": "이 벤더의 회원 식별자",
+            "example": "U20024"
+          },
+          "memberName": {
+            "type": "string",
+            "description": "표기가 흔들릴 수 있음",
+            "example": "조도윤"
+          },
+          "memberPhone": {
+            "type": "string",
+            "description": "하이픈 포함",
+            "example": "010-0000-3059"
+          },
+          "startAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "레슨 시작 (ISO8601, +09:00)",
+            "example": "{{TODAY}}T12:30:00+09:00"
+          },
+          "endAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "레슨 종료 (ISO8601, +09:00)",
+            "example": "{{TODAY}}T12:45:00+09:00"
+          },
+          "instructorId": {
+            "type": "string",
+            "example": "T503"
+          },
+          "instructorName": {
+            "type": "string",
+            "example": "박프로"
+          },
+          "instructorPhone": {
+            "type": "string",
+            "description": "하이픈 포함",
+            "example": "010-9000-0503"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "RESERVED",
+              "CHECKED_IN",
+              "CANCELED"
+            ],
+            "description": "RESERVED=예약 / CHECKED_IN=체크인 / CANCELED=취소"
+          }
+        },
+        "required": [
+          "bookingId",
+          "storeId",
+          "memberId",
+          "memberName",
+          "memberPhone",
+          "startAt",
+          "endAt",
+          "instructorId",
+          "instructorName",
+          "instructorPhone",
+          "status"
+        ]
+      },
+      "BookingsResponse": {
+        "type": "object",
+        "properties": {
+          "list": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Booking"
+            }
+          },
+          "pageInfo": {
+            "type": "object",
+            "properties": {
+              "totalPage": {
+                "type": "integer",
+                "description": "전체 페이지 수. 이 값까지 순회하면 되고, 예약이 없으면 1 입니다",
+                "example": 2
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
