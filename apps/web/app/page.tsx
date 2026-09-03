@@ -180,6 +180,7 @@ function initialRoute() {
 export default function HomePage() {
   const initial = useMemo(initialRoute, []);
   const cacheRef = useRef(new Map<string, unknown>());
+  const activeScopeRef = useRef("");
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [session, setSession] = useState<Session | null>(null);
   const [sessionGeneration, setSessionGeneration] = useState(0);
@@ -238,7 +239,7 @@ export default function HomePage() {
     updateRoute({ view: "lessons", storeId: "", lessonId: "" }, true);
   }, [clearSessionCache, updateRoute]);
 
-  const establishSession = useCallback((payload: unknown, preferredStore?: string) => {
+  const establishSession = useCallback((payload: unknown, preferredStore?: string, preferredView: View = "lessons", preferredLessonId = "") => {
     const nextSession = parseSession(payload);
     if (!nextSession) throw new Error("The API returned an invalid session.");
     clearSessionCache();
@@ -247,7 +248,8 @@ export default function HomePage() {
     const selected = nextSession.memberships.some((membership) => membership.storeId === preferredStore)
       ? preferredStore!
       : nextSession.memberships[0]?.storeId || "";
-    updateRoute({ view: "lessons", storeId: selected, lessonId: "" }, true);
+    const keepDetail = preferredView === "detail" && Boolean(preferredLessonId) && Boolean(selected);
+    updateRoute({ view: keepDetail ? "detail" : "lessons", storeId: selected, lessonId: keepDetail ? preferredLessonId : "" }, true);
     setAuthError("");
   }, [clearSessionCache, updateRoute]);
 
@@ -257,7 +259,7 @@ export default function HomePage() {
       .then((payload) => {
         if (!cancelled) {
           try {
-            establishSession(payload, initial.storeId);
+            establishSession(payload, initial.storeId, initial.view, initial.lessonId);
           } catch (error) {
             setAuthError(error instanceof Error ? error.message : "Unable to read the current session.");
           }
@@ -292,6 +294,7 @@ export default function HomePage() {
   );
   const effectiveRole = activeMembership?.role || normalizeRole(session?.user.role || session?.user.effectiveRole);
   const cacheScope = `${session?.subject || "anonymous"}:${sessionGeneration}:${activeStoreId}:${effectiveRole}`;
+  activeScopeRef.current = cacheScope;
 
   const handleApiError = useCallback((error: unknown, setError: (message: string) => void) => {
     if (error instanceof ApiError && error.status === 401) {
@@ -318,6 +321,7 @@ export default function HomePage() {
       const query = new URLSearchParams();
       if (statusFilter) query.set("status", statusFilter);
       const loaded = extractLessons(await apiFetch<unknown>(`/stores/${encodeURIComponent(activeStoreId)}/lessons?${query.toString()}`));
+      if (activeScopeRef.current !== cacheScope) return;
       cacheRef.current.set(key, loaded);
       setLessons(loaded);
       const feedbackEntries = await Promise.all(loaded.map(async (lesson) => {
@@ -332,7 +336,7 @@ export default function HomePage() {
           throw error;
         }
       }));
-      setFeedbackByLesson(Object.fromEntries(feedbackEntries));
+      if (activeScopeRef.current === cacheScope) setFeedbackByLesson(Object.fromEntries(feedbackEntries));
     } catch (error) {
       handleApiError(error, setLessonsError);
     } finally {
@@ -410,11 +414,10 @@ export default function HomePage() {
         method: "POST",
         body: JSON.stringify(body),
       });
-      let sessionPayload = response;
-      if (!parseSession(response)) sessionPayload = await apiFetch<unknown>("/auth/me");
+      const sessionPayload = await apiFetch<unknown>("/auth/me");
       establishSession(sessionPayload);
     } catch (error) {
-      handleApiError(error, setAuthError);
+      setAuthError(error instanceof Error ? error.message : "Unable to authenticate.");
     } finally {
       setAuthBusy(false);
     }

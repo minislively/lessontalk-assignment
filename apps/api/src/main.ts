@@ -18,7 +18,7 @@ const prisma = new PrismaClient();
 const scrypt = promisify(scryptCallback);
 const PORT = Number(process.env.PORT ?? 3000);
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS ?? 7 * 24 * 60 * 60 * 1000);
-const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production';
+const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true' || (process.env.NODE_ENV === 'production' && process.env.COOKIE_SECURE !== 'false');
 const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN;
 const COOKIE_NAME = process.env.COOKIE_NAME ?? 'lessontalk_session';
 const CSRF_COOKIE_NAME = 'lessontalk_csrf';
@@ -184,6 +184,9 @@ function kstToUtc(dateText: string, timeText: string): Date {
   const result = new Date(utcMillis);
   if (Number.isNaN(result.getTime())) throw new Error('invalid local datetime');
   return result;
+}
+function isValidDateText(value: string): boolean {
+  try { kstToUtc(value, '00:00'); return true; } catch { return false; }
 }
 function dayBounds(dateText: string): { start: Date; end: Date } {
   return { start: kstToUtc(dateText, '00:00'), end: kstToUtc(dateText, '24:00') };
@@ -368,6 +371,13 @@ async function syncAll(date = kstDate()): Promise<any> {
   }
   return result;
 }
+async function syncOwnedStores(memberships: Array<{ storeId: string; store: { id: string; vendor: Vendor; externalStoreId: string } }>, date: string): Promise<any[]> {
+  const result: any[] = [];
+  for (const item of memberships) {
+    result.push({ vendor: item.store.vendor, storeId: item.storeId, externalStoreId: item.store.externalStoreId, ...(await syncTarget(item.store.vendor, item.store, date)) });
+  }
+  return result;
+}
 function nextKstDate(date: string): string {
   const [year, month, day] = date.split('-').map(Number);
   return new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10);
@@ -423,8 +433,8 @@ async function sendMessage(request: any): Promise<void> {
     await prisma.feedbackRequest.update({ where: { id: request.id }, data: { status: ambiguous ? FeedbackRequestStatus.RECONCILE_REQUIRED : FeedbackRequestStatus.RECONCILE_REQUIRED, leaseOwner: null, leaseUntil: null, reason: ambiguous ? 'AMBIGUOUS_SUBMIT' : String(error) } });
   }
 }
-async function pollAcceptedAttempts(): Promise<number> {
-  const attempts = await prisma.messageAttempt.findMany({ where: { status: MessageAttemptStatus.ACCEPTED, providerMessageId: { not: null }, OR: [{ nextPollAt: null }, { nextPollAt: { lte: new Date() } }] }, include: { feedbackRequest: { include: { lesson: { include: { feedback: true } } } } } });
+async function pollAcceptedAttempts(storeIds?: string[]): Promise<number> {
+  const attempts = await prisma.messageAttempt.findMany({ where: { ...(storeIds ? { feedbackRequest: { lesson: { storeId: { in: storeIds } } } } : {}), status: MessageAttemptStatus.ACCEPTED, providerMessageId: { not: null }, OR: [{ nextPollAt: null }, { nextPollAt: { lte: new Date() } }] }, include: { feedbackRequest: { include: { lesson: { include: { feedback: true } } } } } });
   let polled = 0;
   for (const attempt of attempts) {
     polled += 1;
@@ -460,9 +470,9 @@ async function pollAcceptedAttempts(): Promise<number> {
   }
   return polled;
 }
-async function processMessaging(): Promise<number> {
-  await pollAcceptedAttempts();
-  const requests = await prisma.feedbackRequest.findMany({ where: { status: { in: [FeedbackRequestStatus.PENDING, FeedbackRequestStatus.RETRY_WAIT] }, OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: new Date() } }] }, include: { lesson: { include: { feedback: true } } } });
+async function processMessaging(storeIds?: string[]): Promise<number> {
+  await pollAcceptedAttempts(storeIds);
+  const requests = await prisma.feedbackRequest.findMany({ where: { ...(storeIds ? { lesson: { storeId: { in: storeIds } } } : {}), status: { in: [FeedbackRequestStatus.PENDING, FeedbackRequestStatus.RETRY_WAIT] }, OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: new Date() } }] }, include: { lesson: { include: { feedback: true } } } });
   let processed = 0;
   for (const request of requests) {
     if (request.lesson.feedback) { await prisma.feedbackRequest.update({ where: { id: request.id }, data: { status: FeedbackRequestStatus.SUPPRESSED, reason: 'FEEDBACK_EXISTS' } }); continue; }
@@ -517,11 +527,13 @@ async function route(req: IncomingMessage, res: ServerResponse) {
   }
   if (req.method === 'POST' && path === '/auth/register') {
     try {
-      const input = await body(req); const name = String(input.name ?? '').trim(); const phone = normalizeKoreanPhone(String(input.phone ?? '')); const password = String(input.password ?? '');
+      const input = await body(req);
+      if (!input || typeof input !== 'object' || Array.isArray(input)) { sendError(res, 400, 'request body must be an object'); return; }
+      const name = String(input.name ?? '').trim(); const phone = normalizeKoreanPhone(String(input.phone ?? '')); const password = String(input.password ?? '');
       if (!name || !isValidPhone(phone) || password.length < 8) { sendError(res, 400, 'name, valid phone and password (8+ characters) are required'); return; }
+      if (input.storeId !== undefined) { sendError(res, 400, 'store membership is granted by the organization'); return; }
       const exists = await prisma.user.findUnique({ where: { phoneNormalized: phone } }); if (exists) { sendError(res, 409, 'phone is already registered'); return; }
       const user = await prisma.user.create({ data: { name, phoneNormalized: phone, passwordHash: await hashPassword(password) } });
-      if (input.storeId) { const store = await resolveStore(String(input.storeId)); if (store) await prisma.membership.create({ data: { userId: user.id, storeId: store.id, effectiveRole: MembershipRole.MEMBER } }); }
       const session = await createSession(user); const csrf = randomBytes(24).toString('base64url');
       send(res, 201, { user: serializeUser(user) }, { 'Set-Cookie': [cookieHeader(COOKIE_NAME, session, Math.floor(SESSION_TTL_MS / 1000), true), cookieHeader(CSRF_COOKIE_NAME, csrf, Math.floor(SESSION_TTL_MS / 1000), false)] });
     } catch (error) { sendError(res, error instanceof ExternalError ? error.status ?? 400 : 500, error instanceof Error ? error.message : 'registration failed'); }
@@ -529,7 +541,8 @@ async function route(req: IncomingMessage, res: ServerResponse) {
   }
   if (req.method === 'POST' && path === '/auth/login') {
     try {
-      const input = await body(req); const phone = normalizeKoreanPhone(String(input.phone ?? '')); const user = await prisma.user.findUnique({ where: { phoneNormalized: phone } });
+      const input = await body(req); if (!input || typeof input !== 'object' || Array.isArray(input)) { sendError(res, 400, 'request body must be an object'); return; }
+      const phone = normalizeKoreanPhone(String(input.phone ?? '')); const user = await prisma.user.findUnique({ where: { phoneNormalized: phone } });
       if (!user || !(await verifyPassword(String(input.password ?? ''), user.passwordHash))) { sendError(res, 401, 'invalid credentials'); return; }
       const session = await createSession(user); const csrf = randomBytes(24).toString('base64url');
       send(res, 200, { user: serializeUser(user) }, { 'Set-Cookie': [cookieHeader(COOKIE_NAME, session, Math.floor(SESSION_TTL_MS / 1000), true), cookieHeader(CSRF_COOKIE_NAME, csrf, Math.floor(SESSION_TTL_MS / 1000), false)] });
@@ -552,23 +565,27 @@ async function route(req: IncomingMessage, res: ServerResponse) {
   }
   if (req.method === 'POST' && path === '/sync') {
     if (!auth) { sendError(res, 401, 'authentication required'); return; }
-    const input = await body(req).catch(() => ({})); const memberships = await prisma.membership.findMany({ where: { userId: auth.user.id, effectiveRole: MembershipRole.OWNER } });
+    const input = await body(req); if (!input || typeof input !== 'object' || Array.isArray(input)) { sendError(res, 400, 'request body must be an object'); return; }
+    const memberships = await prisma.membership.findMany({ where: { userId: auth.user.id, effectiveRole: MembershipRole.OWNER }, include: { store: true } });
     if (!memberships.length) { sendError(res, 403, 'owner role required'); return; }
     const date = String(input.date ?? parsed.searchParams.get('date') ?? kstDate());
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { sendError(res, 400, 'date must be YYYY-MM-DD'); return; }
-    const result = await syncAll(date); await processMessaging(); send(res, 200, { date, result }); return;
+    if (!isValidDateText(date)) { sendError(res, 400, 'date must be a valid YYYY-MM-DD calendar date'); return; }
+    const result = await syncOwnedStores(memberships, date); await processMessaging(memberships.map((item) => item.storeId)); send(res, 200, { date, result }); return;
   }
   if (req.method === 'POST' && path === '/feedback-requests/process') {
     if (!auth) { sendError(res, 401, 'authentication required'); return; }
     const owner = await prisma.membership.findFirst({ where: { userId: auth.user.id, effectiveRole: MembershipRole.OWNER } });
     if (!owner) { sendError(res, 403, 'owner role required'); return; }
-    send(res, 200, { processed: await processMessaging() }); return;
+    const ownerStores = await prisma.membership.findMany({ where: { userId: auth.user.id, effectiveRole: MembershipRole.OWNER }, select: { storeId: true } });
+    send(res, 200, { processed: await processMessaging(ownerStores.map((item) => item.storeId)) }); return;
   }
   const reconcilePath = /^\/feedback-requests\/([^/]+)\/reconcile$/.exec(path);
   if (req.method === 'POST' && reconcilePath) {
     if (!auth) { sendError(res, 401, 'authentication required'); return; }
-    const owner = await prisma.membership.findFirst({ where: { userId: auth.user.id, effectiveRole: MembershipRole.OWNER } });
-    if (!owner) { sendError(res, 403, 'owner role required'); return; }
+    const request = await prisma.feedbackRequest.findUnique({ where: { id: decodeURIComponent(reconcilePath[1]) }, include: { lesson: true } });
+    if (!request) { sendError(res, 404, 'feedback request not found'); return; }
+    const owner = await membership(auth.user.id, request.lesson.storeId);
+    if (!owner || owner.effectiveRole !== MembershipRole.OWNER) { sendError(res, 403, 'store owner role required'); return; }
     try { send(res, 200, await reconcileMessageRequest(decodeURIComponent(reconcilePath[1]))); }
     catch (error) { sendError(res, error instanceof ExternalError ? 502 : 400, error instanceof Error ? error.message : 'reconciliation failed'); }
     return;
@@ -600,7 +617,8 @@ async function route(req: IncomingMessage, res: ServerResponse) {
     if (!auth) { sendError(res, 401, 'authentication required'); return; }
     const store = await resolveStore(decodeURIComponent(storeLessons[1])); if (!store) { sendError(res, 404, 'store not found'); return; }
     const member = await membership(auth.user.id, store.id); if (!member) { sendError(res, 403, 'store membership required'); return; }
-    const where: any = { storeId: store.id }; const date = parsed.searchParams.get('date'); if (date) { const bounds = dayBounds(date); where.startAt = { gte: bounds.start, lt: bounds.end }; }
+    const where: any = { storeId: store.id }; const date = parsed.searchParams.get('date'); if (date) { if (!isValidDateText(date)) { sendError(res, 400, 'date must be a valid YYYY-MM-DD calendar date'); return; } const bounds = dayBounds(date); where.startAt = { gte: bounds.start, lt: bounds.end }; }
+    const status = parsed.searchParams.get('status'); if (status) { if (!Object.values(LessonStatus).includes(status as LessonStatus)) { sendError(res, 400, 'invalid lesson status'); return; } where.status = status as LessonStatus; }
     const lessons = await prisma.lesson.findMany({ where, include: { feedback: true }, orderBy: { startAt: 'asc' } });
     send(res, 200, { store: serializeStore(store), lessons: lessons.filter((lesson) => canReadLesson(auth.user.id, member.effectiveRole, lesson)).map(serializeLesson) }); return;
   }
@@ -633,7 +651,7 @@ async function route(req: IncomingMessage, res: ServerResponse) {
 
 const server = createServer((req, res) => {
   applyCors(req, res);
-  route(req, res).catch((error) => { console.error('[api]', error); if (!res.headersSent) sendError(res, 500, 'internal server error'); });
+  route(req, res).catch((error) => { console.error('[api]', error); if (!res.headersSent) sendError(res, error instanceof ExternalError ? error.status ?? 400 : 500, error instanceof ExternalError ? error.message : 'internal server error'); });
 });
 const isMainModule = Boolean(process.argv[1]) && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 if (isMainModule) {
