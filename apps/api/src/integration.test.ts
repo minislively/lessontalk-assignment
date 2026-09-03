@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-const base = process.env.API_BASE_URL ?? 'http://localhost:3002';
+const base = process.env.API_BASE_URL ?? 'http://localhost:3001';
 
 async function login(phone: string) {
   const response = await fetch(`${base}/auth/login`, {

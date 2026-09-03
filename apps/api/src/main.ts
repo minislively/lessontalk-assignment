@@ -279,7 +279,7 @@ async function fetchLessons(vendor: Vendor, externalStoreId: string, date: strin
       if (!raw || !Array.isArray(raw.list) || !raw.pageInfo || !Number.isInteger(raw.pageInfo.totalPage) || raw.pageInfo.totalPage < 1) throw new Error('invalid vendor A booking response');
       all.push(...raw.list.map(mapA)); if (page >= raw.pageInfo.totalPage) break;
     } else if (vendor === 'VENDOR_B') {
-      if (typeof raw !== 'string' || !/<result[\s>]/i.test(raw) || !/<hasNextPage>/i.test(raw)) throw new Error('invalid vendor B booking response');
+      if (typeof raw !== 'string' || !/<result[\s>]/i.test(raw) || !/<list[\s>]/i.test(raw) || !/<hasNextPage>/i.test(raw)) throw new Error('invalid vendor B booking response');
       for (const block of raw.match(/<booking>[\s\S]*?<\/booking>/gi) ?? []) all.push(mapB(block));
       const nextValue = xmlTag(raw, 'hasNextPage').toLowerCase(); if (!['true', 'false'].includes(nextValue)) throw new Error('invalid vendor B pagination');
       if (nextValue === 'false') break;
@@ -323,10 +323,13 @@ async function syncTarget(vendor: Vendor, store: { id: string; externalStoreId: 
   const run = await prisma.syncRun.create({ data: { targetId: target.id, status: SyncRunStatus.RUNNING } });
   try {
     const lessons = await fetchLessons(vendor, store.externalStoreId, lessonDate);
+    if (lessons.some((item) => item.externalStoreId !== store.externalStoreId)) throw new Error('external store mismatch in booking response');
     const { start, end } = dayBounds(lessonDate);
     const completeAt = new Date();
     let created = 0;
     await prisma.$transaction(async (tx) => {
+      const lease = await tx.syncTarget.findFirst({ where: { id: target.id, leaseOwner: SYNC_WORKER_ID, leaseToken, leaseUntil: { gt: new Date() } } });
+      if (!lease) throw new Error('sync lease expired before commit');
       for (const item of lessons) {
         const memberUserId = await upsertIdentity(tx, vendor, PersonType.MEMBER, item.memberExternalId, item.memberPhone, item.memberName);
         const instructorUserId = await upsertIdentity(tx, vendor, PersonType.INSTRUCTOR, item.instructorExternalId, item.instructorPhone, item.instructorName);
@@ -484,7 +487,7 @@ async function processMessaging(storeIds?: string[]): Promise<number> {
       status: FeedbackRequestStatus.SENDING,
       leaseUntil: { lt: new Date() },
     },
-    data: { status: FeedbackRequestStatus.RETRY_WAIT, leaseOwner: null, leaseUntil: null, nextAttemptAt: new Date(), reason: 'CLAIM_EXPIRED' },
+    data: { status: FeedbackRequestStatus.RECONCILE_REQUIRED, leaseOwner: null, leaseUntil: null, nextAttemptAt: null, reason: 'CLAIM_EXPIRED_RECONCILIATION_REQUIRED' },
   });
   const requests = await prisma.feedbackRequest.findMany({ where: { ...(storeIds ? { lesson: { storeId: { in: storeIds } } } : {}), status: { in: [FeedbackRequestStatus.PENDING, FeedbackRequestStatus.RETRY_WAIT] }, OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: new Date() } }] }, include: { lesson: { include: { feedback: true } } } });
   let processed = 0;
@@ -509,8 +512,9 @@ async function reconcileMessageRequest(requestId: string): Promise<{ status: str
   if (matches.length !== 1) return { status: request.status, matches: matches.length };
   const found = matches[0];
   const previous = request.attempts.sort((a: any, b: any) => b.attemptNo - a.attemptNo)[0];
-  if (previous) await prisma.messageAttempt.update({ where: { id: previous.id }, data: { status: found.status === 'DELIVERED' ? MessageAttemptStatus.DELIVERED : MessageAttemptStatus.ACCEPTED, providerMessageId: String(found.messageId), resolvedAt: found.resolvedAt ? new Date(found.resolvedAt) : null, reason: null } });
-  await prisma.feedbackRequest.update({ where: { id: request.id }, data: { status: found.status === 'DELIVERED' ? FeedbackRequestStatus.DELIVERED : FeedbackRequestStatus.ACCEPTED, reason: null } });
+  const foundStatus = String(found.status);
+  if (previous) await prisma.messageAttempt.update({ where: { id: previous.id }, data: { status: foundStatus === 'DELIVERED' ? MessageAttemptStatus.DELIVERED : foundStatus === 'FAILED' ? MessageAttemptStatus.FAILED : MessageAttemptStatus.ACCEPTED, providerMessageId: String(found.messageId), resolvedAt: found.resolvedAt ? new Date(found.resolvedAt) : null, reason: found.failureReason ? String(found.failureReason) : null } });
+  await prisma.feedbackRequest.update({ where: { id: request.id }, data: { status: foundStatus === 'DELIVERED' ? FeedbackRequestStatus.DELIVERED : foundStatus === 'FAILED' ? FeedbackRequestStatus.RETRY_WAIT : FeedbackRequestStatus.ACCEPTED, nextAttemptAt: foundStatus === 'FAILED' ? new Date() : null, reason: foundStatus === 'FAILED' ? 'RECONCILED_PROVIDER_FAILED' : null } });
   return { status: found.status, matches: 1 };
 }
 
@@ -622,7 +626,7 @@ async function route(req: IncomingMessage, res: ServerResponse) {
       update: {},
       create: { lessonId: lesson.id, referenceKey: `FEEDBACK_REQUEST:${lesson.id}`, recipientPhone: lesson.instructorPhoneSnapshot, message: `레슨(${lesson.memberNameSnapshot}) 피드백을 작성해 주세요.`, status: FeedbackRequestStatus.PENDING },
     });
-    await processMessaging();
+    await processMessaging([lesson.storeId]);
     send(res, 202, { request });
     return;
   }

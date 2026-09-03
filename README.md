@@ -174,7 +174,7 @@ B/C의 날짜와 시간은 `Asia/Seoul` 현지 시각으로 해석하고 UTC로 
 - 프로: 담당 레슨 조회 및 담당 종료 레슨 피드백 작성
 - 점주: 소속 매장의 전체 레슨 조회 및 피드백 작성
 
-JWT 세션은 HttpOnly, SameSite=Lax 쿠키로 전송하고 localStorage에는 저장하지 않습니다. 로컬 HTTP에서는 `COOKIE_SECURE=false`, 운영 HTTPS에서는 Secure 쿠키를 사용합니다. 브라우저 요청은 credential을 포함하고 API는 허용된 Origin과 CSRF 토큰을 검증합니다. ID 기반 API는 URL 매장과 실제 리소스 매장이 일치하는지 확인한 뒤 서비스 계층에서 membership과 역할을 검증합니다.
+세션 토큰은 DB에 해시로 저장하는 opaque token 방식이며 HttpOnly, SameSite=Lax 쿠키로만 전송하고 localStorage에는 저장하지 않습니다. DB 기반 세션을 선택한 이유는 로그아웃·만료 세션을 즉시 폐기할 수 있고 과제 범위에서 별도의 JWT 검증 계층이 필요하지 않기 때문입니다. 로컬 HTTP에서는 `COOKIE_SECURE=false`, 운영 HTTPS에서는 Secure 쿠키를 사용합니다. 브라우저 요청은 credential을 포함하고 API는 허용된 Origin과 CSRF 토큰을 검증합니다. ID 기반 API는 URL 매장과 실제 리소스 매장이 일치하는지 확인한 뒤 서비스 계층에서 membership과 역할을 검증합니다.
 
 ### 피드백과 메시지
 
@@ -207,7 +207,7 @@ Adapter 변환·페이지네이션·상태 변환·전화번호·권한·피드�
 
 ```bash
 npm --prefix apps/api run test
-npm --prefix apps/api run test:integration
+API_BASE_URL=http://localhost:3001 npm --prefix apps/api run test:integration
 npm --prefix apps/api run build
 npm --prefix apps/web run typecheck
 npm --prefix apps/web run build
