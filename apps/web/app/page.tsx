@@ -96,6 +96,26 @@ function normalizeRole(value: unknown): Role {
   return firstString(value, "MEMBER")!.toUpperCase();
 }
 
+function roleLabel(value: unknown): string {
+  const role = normalizeRole(value);
+  return ({ OWNER: "점주", INSTRUCTOR: "프로", MEMBER: "회원" } as Record<string, string>)[role] || role;
+}
+
+function localizeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "요청을 처리하지 못했습니다.";
+  const translations: Array<[string, string]> = [
+    ["authentication required", "로그인이 필요합니다."],
+    ["invalid credentials", "전화번호 또는 비밀번호가 올바르지 않습니다."],
+    ["store membership required", "해당 매장에 소속되어 있지 않습니다."],
+    ["owner role required", "점주 권한이 필요합니다."],
+    ["request body must be an object", "요청 형식이 올바르지 않습니다."],
+    ["date must be a valid YYYY-MM-DD calendar date", "유효한 날짜를 입력해주세요."],
+    ["lesson is not eligible for a feedback request", "현재 피드백 요청을 보낼 수 없는 레슨입니다."],
+    ["feedback already exists or was changed concurrently", "피드백이 이미 작성되었거나 동시에 변경되었습니다."],
+  ];
+  return translations.find(([source]) => message.includes(source))?.[1] || message;
+}
+
 function normalizeMemberships(raw: unknown): Membership[] {
   const list = Array.isArray(raw) ? raw : [];
   return list.flatMap((item) => {
@@ -161,8 +181,10 @@ function statusTone(status: unknown): "success" | "warning" | "danger" | undefin
   return undefined;
 }
 
-function StatusPill({ value, fallback = "Not available" }: { value?: unknown; fallback?: string }) {
-  const text = String(value || fallback).replaceAll("_", " ");
+function StatusPill({ value, fallback = "확인 불가" }: { value?: unknown; fallback?: string }) {
+  const labels: Record<string, string> = { RESERVED: "예약", CHECKED_IN: "체크인", CANCELED: "취소", UNKNOWN: "알 수 없음", SOURCE_MISSING: "원본 누락", DELIVERED: "전달 완료", ACCEPTED: "접수", PENDING: "대기", WRITTEN: "작성 완료" };
+  const raw = String(value || fallback).toUpperCase();
+  const text = labels[raw] || String(value || fallback).replaceAll("_", " ");
   return <span className={`status-pill${statusTone(value) ? ` ${statusTone(value)}` : ""}`}>{text}</span>;
 }
 
@@ -239,7 +261,7 @@ export default function HomePage() {
 
   const establishSession = useCallback((payload: unknown, preferredStore?: string, preferredView: View = "lessons", preferredLessonId = "") => {
     const nextSession = parseSession(payload);
-    if (!nextSession) throw new Error("The API returned an invalid session.");
+    if (!nextSession) throw new Error("세션 정보를 불러오지 못했습니다.");
     clearSessionCache();
     setSessionGeneration((value) => value + 1);
     setSession(nextSession);
@@ -299,7 +321,7 @@ export default function HomePage() {
       expireSession();
       return;
     }
-    setError(error instanceof Error ? error.message : "The request could not be completed.");
+    setError(localizeError(error));
   }, [expireSession]);
 
   const loadLessons = useCallback(async () => {
@@ -411,14 +433,14 @@ export default function HomePage() {
     };
     if (authMode === "register") body.name = String(data.get("name") || "").trim();
     try {
-      const response = await apiFetch<unknown>(authMode === "login" ? "/auth/login" : "/auth/register", {
+      await apiFetch<unknown>(authMode === "login" ? "/auth/login" : "/auth/register", {
         method: "POST",
         body: JSON.stringify(body),
       });
       const sessionPayload = await apiFetch<unknown>("/auth/me");
       establishSession(sessionPayload);
     } catch (error) {
-      setAuthError(error instanceof Error ? error.message : "Unable to authenticate.");
+      setAuthError(localizeError(error));
     } finally {
       setAuthBusy(false);
     }
@@ -450,7 +472,7 @@ export default function HomePage() {
       cacheRef.current.set(`feedback:${cacheScope}:${selectedLessonId}`, feedback);
       setDetailFeedback(feedback);
       setFeedbackByLesson((current) => ({ ...current, [selectedLessonId]: feedback }));
-      setFeedbackMessage("Feedback saved.");
+      setFeedbackMessage("피드백이 저장되었습니다.");
     } catch (error) {
       handleApiError(error, setFeedbackMessage);
     } finally {
@@ -464,7 +486,7 @@ export default function HomePage() {
     setRequestMessage("");
     try {
       await apiFetch(`/lessons/${encodeURIComponent(selectedLessonId)}/feedback-request`, { method: "POST" });
-      setRequestMessage("Feedback request queued.");
+      setRequestMessage("피드백 작성 요청을 접수했습니다.");
     } catch (error) {
       handleApiError(error, setRequestMessage);
     } finally {
@@ -482,18 +504,18 @@ export default function HomePage() {
         <div className="auth-card">
           <div className="brand"><div className="brand-mark">LT</div><h1>Lessontalk</h1></div>
           <section className="card">
-            <h2>{authMode === "login" ? "Welcome back" : "Create your account"}</h2>
-            <p className="muted">{authMode === "login" ? "Sign in to view your lessons and feedback." : "New accounts start as members. Store access is granted by your organization."}</p>
+            <h2>{authMode === "login" ? "다시 오신 것을 환영합니다" : "계정 만들기"}</h2>
+            <p className="muted">{authMode === "login" ? "레슨과 피드백을 확인하려면 로그인하세요." : "새 계정은 회원으로 시작합니다. 매장 접근 권한은 매장 관리자가 부여합니다."}</p>
             {authError && <div className="alert alert-error" role="alert">{authError}</div>}
             <form className="form-grid" onSubmit={submitAuth}>
-              {authMode === "register" && <div className="field"><label htmlFor="name">Name</label><input id="name" name="name" required autoComplete="name" /></div>}
-              <div className="field"><label htmlFor="phone">Phone</label><input id="phone" name="phone" required autoComplete="tel" inputMode="tel" placeholder="010-0000-0000" /></div>
-              <div className="field"><label htmlFor="password">Password</label><input id="password" name="password" required type="password" autoComplete={authMode === "login" ? "current-password" : "new-password"} /></div>
-              <button className="btn btn-primary" type="submit" disabled={authBusy}>{authBusy ? "Please wait…" : authMode === "login" ? "Sign in" : "Register"}</button>
+              {authMode === "register" && <div className="field"><label htmlFor="name">이름</label><input id="name" name="name" required autoComplete="name" /></div>}
+              <div className="field"><label htmlFor="phone">전화번호</label><input id="phone" name="phone" required autoComplete="tel" inputMode="tel" placeholder="010-0000-0000" /></div>
+              <div className="field"><label htmlFor="password">비밀번호</label><input id="password" name="password" required type="password" autoComplete={authMode === "login" ? "current-password" : "new-password"} /></div>
+              <button className="btn btn-primary" type="submit" disabled={authBusy}>{authBusy ? "잠시만 기다려주세요…" : authMode === "login" ? "로그인" : "회원가입"}</button>
             </form>
             <div className="auth-toggle">
-              <span className="muted small">{authMode === "login" ? "Need an account?" : "Already registered?"} </span>
-              <button className="btn-link" type="button" onClick={() => { setAuthMode(authMode === "login" ? "register" : "login"); setAuthError(""); }}>{authMode === "login" ? "Register" : "Sign in"}</button>
+              <span className="muted small">{authMode === "login" ? "계정이 없으신가요?" : "이미 가입하셨나요?"} </span>
+              <button className="btn-link" type="button" onClick={() => { setAuthMode(authMode === "login" ? "register" : "login"); setAuthError(""); }}>{authMode === "login" ? "회원가입" : "로그인"}</button>
             </div>
           </section>
         </div>
@@ -509,18 +531,18 @@ export default function HomePage() {
     <div className="shell">
       <header className="topbar">
         <div className="container topbar-inner">
-          <button className="brand btn-link" type="button" onClick={() => updateRoute({ view: "lessons", lessonId: "" })} aria-label="Go to lessons"><div className="brand-mark">LT</div><h1>Lessontalk</h1></button>
+          <button className="brand btn-link" type="button" onClick={() => updateRoute({ view: "lessons", lessonId: "" })} aria-label="레슨 목록으로 이동"><div className="brand-mark">LT</div><h1>Lessontalk</h1></button>
           <div className="user-context">
-            {session.memberships.length > 0 && <div className="store-switcher"><label htmlFor="store">Active store</label><select id="store" value={activeStoreId} onChange={(event) => { clearSessionCache(); updateRoute({ view: "lessons", storeId: event.target.value, lessonId: "" }); }}><option value="" disabled>Select a store</option>{session.memberships.map((membership) => <option value={membership.storeId} key={membership.storeId}>{membership.storeName}</option>)}</select></div>}
-            <span className="role-pill">{effectiveRole || "NO STORE ROLE"}</span>
+            {session.memberships.length > 0 && <div className="store-switcher"><label htmlFor="store">현재 매장</label><select id="store" value={activeStoreId} onChange={(event) => { clearSessionCache(); updateRoute({ view: "lessons", storeId: event.target.value, lessonId: "" }); }}><option value="" disabled>매장을 선택하세요</option>{session.memberships.map((membership) => <option value={membership.storeId} key={membership.storeId}>{membership.storeName}</option>)}</select></div>}
+            <span className="role-pill">{effectiveRole ? roleLabel(effectiveRole) : "매장 역할 없음"}</span>
             <span className="muted small">{userName}</span>
-            <button className="btn btn-secondary" type="button" onClick={() => void logout()}>Log out</button>
+            <button className="btn btn-secondary" type="button" onClick={() => void logout()}>로그아웃</button>
           </div>
         </div>
       </header>
       <main className="main container">
         {!activeStoreId ? (
-          <section className="card empty"><h2>No store access</h2><p className="muted">Your account is authenticated, but it has no store membership yet. Ask an owner to provision access.</p></section>
+          <section className="card empty"><h2>매장 접근 권한 없음</h2><p className="muted">로그인되었지만 소속된 매장이 없습니다. 점주에게 매장 접근 권한을 요청하세요.</p></section>
         ) : view === "detail" ? (
           <LessonDetail
             lesson={detailLesson}
@@ -542,13 +564,13 @@ export default function HomePage() {
         ) : (
           <section>
             <div className="page-heading">
-              <div><h2>Lessons</h2><p className="muted">{activeMembership?.storeName || activeStoreId} · {effectiveRole || "membership pending"}</p></div>
-              <div className="stats"><div className="stat"><strong>{lessons.length}</strong><span>visible lessons</span></div><div className="stat"><strong>{lessons.filter((lesson) => feedbackByLesson[lesson.id]).length}</strong><span>with feedback</span></div></div>
+              <div><h2>레슨</h2><p className="muted">{activeMembership?.storeName || activeStoreId} · {effectiveRole ? roleLabel(effectiveRole) : "소속 승인 대기"}</p></div>
+              <div className="stats"><div className="stat"><strong>{lessons.length}</strong><span>조회 가능한 레슨</span></div><div className="stat"><strong>{lessons.filter((lesson) => feedbackByLesson[lesson.id]).length}</strong><span>피드백 작성 완료</span></div></div>
             </div>
-            <div className="actions" style={{ marginBottom: 17 }}><label className="field" style={{ display: "flex", alignItems: "center", flexDirection: "row", gap: 8 }}><span className="muted small">Status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All lessons</option><option value="RESERVED">Reserved</option><option value="CHECKED_IN">Checked in</option><option value="UNKNOWN">Unknown</option><option value="SOURCE_MISSING">Source missing</option><option value="CANCELED">Canceled</option></select></label><button className="btn btn-secondary" type="button" onClick={() => { cacheRef.current.clear(); void loadLessons(); }} disabled={lessonsLoading}>Refresh</button></div>
+            <div className="actions" style={{ marginBottom: 17 }}><label className="field" style={{ display: "flex", alignItems: "center", flexDirection: "row", gap: 8 }}><span className="muted small">상태</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">전체 레슨</option><option value="RESERVED">예약</option><option value="CHECKED_IN">체크인</option><option value="UNKNOWN">알 수 없음</option><option value="SOURCE_MISSING">원본 누락</option><option value="CANCELED">취소</option></select></label><button className="btn btn-secondary" type="button" onClick={() => { cacheRef.current.clear(); void loadLessons(); }} disabled={lessonsLoading}>새로고침</button></div>
             {lessonsError && <div className="alert alert-error" role="alert">{lessonsError}</div>}
-            {lessonsLoading && <div className="spinner">Loading lessons…</div>}
-            {!lessonsLoading && lessons.length === 0 && !lessonsError && <div className="empty"><h3>No lessons found</h3><p className="muted">There are no lessons for this store and filter yet.</p></div>}
+            {lessonsLoading && <div className="spinner">레슨을 불러오는 중…</div>}
+            {!lessonsLoading && lessons.length === 0 && !lessonsError && <div className="empty"><h3>레슨이 없습니다</h3><p className="muted">현재 매장과 조건에 맞는 레슨이 없습니다.</p></div>}
             {!lessonsLoading && lessons.length > 0 && <div className="lesson-grid">{lessons.map((lesson) => <LessonCard key={lesson.id} lesson={lesson} feedback={feedbackByLesson[lesson.id]} onOpen={() => updateRoute({ view: "detail", lessonId: lesson.id })} />)}</div>}
           </section>
         )}
@@ -559,7 +581,7 @@ export default function HomePage() {
 
 function LessonCard({ lesson, feedback, onOpen }: { lesson: Lesson; feedback?: Feedback | null; onOpen: () => void }) {
   const status = firstString(lesson.status, lesson.state) || "UNKNOWN";
-  return <article className="card lesson-card"><header><div><h3>{formatDate(lesson.startAt || lesson.lessonDate)}</h3><p className="muted small">Lesson {lesson.id}</p></div><StatusPill value={status} /></header><div className="lesson-meta"><div><strong>Member:</strong> {displayName(lesson.member || asRecord(lesson.memberInfo))}</div><div><strong>Instructor:</strong> {displayName(lesson.instructor || asRecord(lesson.professor))}</div><div><strong>Ends:</strong> {formatDate(lesson.endAt)}</div></div><div className="lesson-footer"><span className="small muted">Feedback <StatusPill value={feedback?.status} fallback={feedback ? "Written" : "Not written"} /></span><button className="btn btn-secondary" type="button" onClick={onOpen}>View lesson</button></div></article>;
+  return <article className="card lesson-card"><header><div><h3>{formatDate(lesson.startAt || lesson.lessonDate)}</h3><p className="muted small">레슨 {lesson.id}</p></div><StatusPill value={status} /></header><div className="lesson-meta"><div><strong>회원:</strong> {displayName(lesson.member || asRecord(lesson.memberInfo))}</div><div><strong>프로:</strong> {displayName(lesson.instructor || asRecord(lesson.professor))}</div><div><strong>종료:</strong> {formatDate(lesson.endAt)}</div></div><div className="lesson-footer"><span className="small muted">피드백 <StatusPill value={feedback?.status} fallback={feedback ? "작성 완료" : "미작성"} /></span><button className="btn btn-secondary" type="button" onClick={onOpen}>레슨 보기</button></div></article>;
 }
 
 function LessonDetail({ lesson, feedback, loading, error, feedbackContent, feedbackBusy, feedbackMessage, requestBusy, requestMessage, canWrite, canRequest, onBack, onFeedbackContent, onSubmitFeedback, onRequestFeedback }: {
@@ -579,5 +601,5 @@ function LessonDetail({ lesson, feedback, loading, error, feedbackContent, feedb
   onSubmitFeedback: (event: FormEvent<HTMLFormElement>) => void;
   onRequestFeedback: () => void;
 }) {
-  return <section><div className="back-link"><button className="btn-link" type="button" onClick={onBack}>← Back to lessons</button></div>{loading && <div className="spinner">Loading lesson…</div>}{error && <div className="alert alert-error" role="alert">{error}</div>}{!loading && !error && lesson && <div className="detail-layout"><div className="detail-stack"><article className="card"><div className="page-heading" style={{ marginBottom: 0 }}><div><h2>Lesson detail</h2><p className="muted small">{lesson.id}</p></div><StatusPill value={firstString(lesson.status, lesson.state) || "UNKNOWN"} /></div><dl className="detail-list"><dt>Starts</dt><dd>{formatDate(lesson.startAt || lesson.lessonDate)}</dd><dt>Ends</dt><dd>{formatDate(lesson.endAt)}</dd><dt>Member</dt><dd>{displayName(lesson.member || asRecord(lesson.memberInfo))}</dd><dt>Instructor</dt><dd>{displayName(lesson.instructor || asRecord(lesson.professor))}</dd><dt>Store</dt><dd>{displayName(lesson.store || asRecord(lesson.storeInfo), lesson.storeId || "—")}</dd></dl></article><article className="card"><div className="page-heading" style={{ marginBottom: 0 }}><div><h3>Feedback</h3><p className="muted small">Current feedback status</p></div><StatusPill value={feedback?.status} fallback={feedback ? "Written" : "Not written"} /></div>{feedback ? <><p className="feedback-content">{feedback.content || "No written content."}</p><p className="muted small">{formatDate(feedback.updatedAt || feedback.createdAt)}</p></> : <p className="muted">No feedback has been submitted for this lesson.</p>}</article></div><div className="detail-stack">{canWrite && <article className="card"><h3>{feedback ? "Update feedback" : "Write feedback"}</h3><p className="muted small">The API validates lesson status, assignment, and completion before saving.</p>{feedbackMessage && <div className={`alert ${feedbackMessage === "Feedback saved." ? "alert-success" : "alert-error"}`} role="status">{feedbackMessage}</div>}<form className="form-grid" onSubmit={onSubmitFeedback}><div className="field"><label htmlFor="feedback-content">Feedback</label><textarea id="feedback-content" value={feedbackContent} onChange={(event) => onFeedbackContent(event.target.value)} maxLength={5000} required placeholder="Share clear, actionable notes…" /></div><button className="btn btn-primary" type="submit" disabled={feedbackBusy}>{feedbackBusy ? "Saving…" : feedback ? "Update feedback" : "Save feedback"}</button></form></article>}{canRequest && <article className="card"><h3>Feedback request</h3><p className="muted small">Ask the assigned instructor to complete feedback. Sending is authorized by the API.</p>{requestMessage && <div className={`alert ${requestMessage === "Feedback request queued." ? "alert-success" : "alert-error"}`} role="status">{requestMessage}</div>}<button className="btn btn-secondary" type="button" onClick={onRequestFeedback} disabled={requestBusy || Boolean(feedback)}>{requestBusy ? "Queueing…" : feedback ? "Feedback already exists" : "Request feedback"}</button></article>}{!canWrite && <div className="notice">You can read this feedback, but your current store role does not allow editing it.</div>}</div></div>}</section>;
+  return <section><div className="back-link"><button className="btn-link" type="button" onClick={onBack}>← 레슨 목록으로</button></div>{loading && <div className="spinner">레슨을 불러오는 중…</div>}{error && <div className="alert alert-error" role="alert">{error}</div>}{!loading && !error && lesson && <div className="detail-layout"><div className="detail-stack"><article className="card"><div className="page-heading" style={{ marginBottom: 0 }}><div><h2>레슨 상세</h2><p className="muted small">{lesson.id}</p></div><StatusPill value={firstString(lesson.status, lesson.state) || "UNKNOWN"} /></div><dl className="detail-list"><dt>시작</dt><dd>{formatDate(lesson.startAt || lesson.lessonDate)}</dd><dt>종료</dt><dd>{formatDate(lesson.endAt)}</dd><dt>회원</dt><dd>{displayName(lesson.member || asRecord(lesson.memberInfo))}</dd><dt>프로</dt><dd>{displayName(lesson.instructor || asRecord(lesson.professor))}</dd><dt>매장</dt><dd>{displayName(lesson.store || asRecord(lesson.storeInfo), lesson.storeId || "—")}</dd></dl></article><article className="card"><div className="page-heading" style={{ marginBottom: 0 }}><div><h3>피드백</h3><p className="muted small">현재 피드백 상태</p></div><StatusPill value={feedback?.status} fallback={feedback ? "작성 완료" : "미작성"} /></div>{feedback ? <><p className="feedback-content">{feedback.content || "작성된 내용이 없습니다."}</p><p className="muted small">{formatDate(feedback.updatedAt || feedback.createdAt)}</p></> : <p className="muted">아직 작성된 피드백이 없습니다.</p>}</article></div><div className="detail-stack">{canWrite && <article className="card"><h3>{feedback ? "피드백 수정" : "피드백 작성"}</h3><p className="muted small">저장 전에 레슨 상태, 담당자, 종료 여부를 확인합니다.</p>{feedbackMessage && <div className={`alert ${feedbackMessage === "피드백이 저장되었습니다." ? "alert-success" : "alert-error"}`} role="status">{feedbackMessage}</div>}<form className="form-grid" onSubmit={onSubmitFeedback}><div className="field"><label htmlFor="feedback-content">피드백 내용</label><textarea id="feedback-content" value={feedbackContent} onChange={(event) => onFeedbackContent(event.target.value)} maxLength={5000} required placeholder="구체적이고 도움이 되는 내용을 작성하세요…" /></div><button className="btn btn-primary" type="submit" disabled={feedbackBusy}>{feedbackBusy ? "저장 중…" : feedback ? "피드백 수정" : "피드백 저장"}</button></form></article>}{canRequest && <article className="card"><h3>피드백 작성 요청</h3><p className="muted small">담당 프로에게 피드백 작성을 요청합니다.</p>{requestMessage && <div className={`alert ${requestMessage === "피드백 작성 요청을 접수했습니다." ? "alert-success" : "alert-error"}`} role="status">{requestMessage}</div>}<button className="btn btn-secondary" type="button" onClick={onRequestFeedback} disabled={requestBusy || Boolean(feedback)}>{requestBusy ? "접수 중…" : feedback ? "피드백이 이미 있습니다" : "작성 요청 보내기"}</button></article>}{!canWrite && <div className="notice">현재 역할에서는 피드백을 수정할 수 없지만 내용을 확인할 수 있습니다.</div>}</div></div>}</section>;
 }
