@@ -204,3 +204,11 @@ docker compose up --build
 ### 테스트와 알려진 제한
 
 Adapter 변환·페이지네이션·상태 변환·전화번호·권한·피드백 종료 조건을 단위 테스트로 검증하고, PostgreSQL 및 외부 시스템을 포함한 통합 흐름을 검증합니다. 외부 Messaging 서버가 재기동되어 접수 이력을 잃은 모호한 발송은 중복 발송보다 안전한 `RECONCILE_REQUIRED` 상태로 남깁니다.
+
+```bash
+npm --prefix apps/api run test
+npm --prefix apps/api run test:integration
+npm --prefix apps/api run build
+npm --prefix apps/web run typecheck
+npm --prefix apps/web run build
+```
