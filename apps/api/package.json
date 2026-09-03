@@ -8,6 +8,7 @@
     "start": "prisma db push --schema ../../prisma/schema.prisma --accept-data-loss && npm run seed && tsx src/main.ts",
     "build": "tsc -p tsconfig.json",
     "test": "tsx --test src/main.test.ts",
+    "test:integration": "tsx --test src/integration.test.ts",
     "prisma:generate": "prisma generate --schema ../../prisma/schema.prisma",
     "prisma:migrate": "prisma db push --schema ../../prisma/schema.prisma --accept-data-loss",
     "seed": "tsx ../../prisma/seed.ts",
