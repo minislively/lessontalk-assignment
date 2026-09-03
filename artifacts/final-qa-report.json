@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-package-test-report",
+  "commit": "e1dbc57",
+  "environment": "Docker Compose with API host port 3002",
+  "commands": [
+    "npm --prefix apps/api run test",
+    "API_BASE_URL=http://localhost:3002 npm --prefix apps/api run test:integration",
+    "npm --prefix apps/api run build",
+    "npm --prefix apps/web run typecheck",
+    "npm --prefix apps/web run build",
+    "npm --prefix lessontalk-assignment-external-systems run test:sample",
+    "DATABASE_URL=postgresql://... npx prisma validate --schema prisma/schema.prisma",
+    "docker compose config -q",
+    "curl http://localhost:3002/health"
+  ],
+  "results": {
+    "apiUnit": "3 passed",
+    "apiIntegration": "3 passed",
+    "apiBuild": "passed",
+    "webTypecheck": "passed",
+    "webBuild": "passed",
+    "externalContract": "7 passed",
+    "prismaValidate": "passed",
+    "composeConfig": "passed",
+    "composeRuntime": "db, external-systems, api, and web healthy",
+    "health": "200 {status:ok,database:ok}"
+  },
+  "adversarialChecks": {
+    "missingOriginMutation": "403",
+    "missingCsrfMutation": "403",
+    "invalidCalendarDate": "400",
+    "nullFeedbackBody": "400",
+    "arbitraryStoreSignup": "400",
+    "foreignStoreAccess": "403",
+    "statusFilter": "returns only requested status",
+    "syncIdempotence": "repeated sync produced no duplicate vendor/external booking keys"
+  },
+  "limitations": [
+    "Host API port 3001 was occupied by an existing SSH listener, so runtime verification used API_HOST_PORT=3002.",
+    "External provider randomness prevented deterministic induction of every timeout and response-loss window.",
+    "No clean-volume destructive reset was performed against the persistent local database volume."
+  ]
+}
