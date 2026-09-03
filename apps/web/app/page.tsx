@@ -34,7 +34,6 @@ interface Lesson extends JsonRecord {
 interface Feedback extends JsonRecord {
   id?: string;
   content?: string;
-  rating?: number | null;
   status?: string;
   author?: JsonRecord | null;
   createdAt?: string;
@@ -200,7 +199,6 @@ export default function HomePage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
   const [feedbackContent, setFeedbackContent] = useState("");
-  const [feedbackRating, setFeedbackRating] = useState("");
   const [feedbackBusy, setFeedbackBusy] = useState(false);
   const [feedbackMessage, setFeedbackMessage] = useState("");
   const [requestBusy, setRequestBusy] = useState(false);
@@ -391,7 +389,6 @@ export default function HomePage() {
           setDetailLesson(lesson);
           setDetailFeedback(feedback || null);
           setFeedbackContent(feedback?.content || "");
-          setFeedbackRating(feedback?.rating == null ? "" : String(feedback.rating));
         }
       } catch (error) {
         if (!cancelled) handleApiError(error, setDetailError);
@@ -444,7 +441,6 @@ export default function HomePage() {
     setFeedbackMessage("");
     try {
       const body: JsonRecord = { content: feedbackContent.trim() };
-      if (feedbackRating.trim()) body.rating = Number(feedbackRating);
       const method = detailFeedback ? "PATCH" : "POST";
       const response = await apiFetch<unknown>(`/lessons/${encodeURIComponent(selectedLessonId)}/feedback`, {
         method,
@@ -532,7 +528,6 @@ export default function HomePage() {
             loading={detailLoading}
             error={detailError}
             feedbackContent={feedbackContent}
-            feedbackRating={feedbackRating}
             feedbackBusy={feedbackBusy}
             feedbackMessage={feedbackMessage}
             requestBusy={requestBusy}
@@ -541,7 +536,6 @@ export default function HomePage() {
             canRequest={isStaff}
             onBack={() => updateRoute({ view: "lessons", lessonId: "" })}
             onFeedbackContent={setFeedbackContent}
-            onFeedbackRating={setFeedbackRating}
             onSubmitFeedback={submitFeedback}
             onRequestFeedback={() => void requestFeedback()}
           />
@@ -568,13 +562,12 @@ function LessonCard({ lesson, feedback, onOpen }: { lesson: Lesson; feedback?: F
   return <article className="card lesson-card"><header><div><h3>{formatDate(lesson.startAt || lesson.lessonDate)}</h3><p className="muted small">Lesson {lesson.id}</p></div><StatusPill value={status} /></header><div className="lesson-meta"><div><strong>Member:</strong> {displayName(lesson.member || asRecord(lesson.memberInfo))}</div><div><strong>Instructor:</strong> {displayName(lesson.instructor || asRecord(lesson.professor))}</div><div><strong>Ends:</strong> {formatDate(lesson.endAt)}</div></div><div className="lesson-footer"><span className="small muted">Feedback <StatusPill value={feedback?.status} fallback={feedback ? "Written" : "Not written"} /></span><button className="btn btn-secondary" type="button" onClick={onOpen}>View lesson</button></div></article>;
 }
 
-function LessonDetail({ lesson, feedback, loading, error, feedbackContent, feedbackRating, feedbackBusy, feedbackMessage, requestBusy, requestMessage, canWrite, canRequest, onBack, onFeedbackContent, onFeedbackRating, onSubmitFeedback, onRequestFeedback }: {
+function LessonDetail({ lesson, feedback, loading, error, feedbackContent, feedbackBusy, feedbackMessage, requestBusy, requestMessage, canWrite, canRequest, onBack, onFeedbackContent, onSubmitFeedback, onRequestFeedback }: {
   lesson: Lesson | null;
   feedback: Feedback | null;
   loading: boolean;
   error: string;
   feedbackContent: string;
-  feedbackRating: string;
   feedbackBusy: boolean;
   feedbackMessage: string;
   requestBusy: boolean;
@@ -583,9 +576,8 @@ function LessonDetail({ lesson, feedback, loading, error, feedbackContent, feedb
   canRequest: boolean;
   onBack: () => void;
   onFeedbackContent: (value: string) => void;
-  onFeedbackRating: (value: string) => void;
   onSubmitFeedback: (event: FormEvent<HTMLFormElement>) => void;
   onRequestFeedback: () => void;
 }) {
-  return <section><div className="back-link"><button className="btn-link" type="button" onClick={onBack}>← Back to lessons</button></div>{loading && <div className="spinner">Loading lesson…</div>}{error && <div className="alert alert-error" role="alert">{error}</div>}{!loading && !error && lesson && <div className="detail-layout"><div className="detail-stack"><article className="card"><div className="page-heading" style={{ marginBottom: 0 }}><div><h2>Lesson detail</h2><p className="muted small">{lesson.id}</p></div><StatusPill value={firstString(lesson.status, lesson.state) || "UNKNOWN"} /></div><dl className="detail-list"><dt>Starts</dt><dd>{formatDate(lesson.startAt || lesson.lessonDate)}</dd><dt>Ends</dt><dd>{formatDate(lesson.endAt)}</dd><dt>Member</dt><dd>{displayName(lesson.member || asRecord(lesson.memberInfo))}</dd><dt>Instructor</dt><dd>{displayName(lesson.instructor || asRecord(lesson.professor))}</dd><dt>Store</dt><dd>{displayName(lesson.store || asRecord(lesson.storeInfo), lesson.storeId || "—")}</dd></dl></article><article className="card"><div className="page-heading" style={{ marginBottom: 0 }}><div><h3>Feedback</h3><p className="muted small">Current feedback status</p></div><StatusPill value={feedback?.status} fallback={feedback ? "Written" : "Not written"} /></div>{feedback ? <><p className="feedback-content">{feedback.content || "No written content."}</p><p className="muted small">{feedback.rating != null ? `Rating: ${feedback.rating}/5 · ` : ""}{formatDate(feedback.updatedAt || feedback.createdAt)}</p></> : <p className="muted">No feedback has been submitted for this lesson.</p>}</article></div><div className="detail-stack">{canWrite && <article className="card"><h3>{feedback ? "Update feedback" : "Write feedback"}</h3><p className="muted small">The API validates lesson status, assignment, and completion before saving.</p>{feedbackMessage && <div className={`alert ${feedbackMessage === "Feedback saved." ? "alert-success" : "alert-error"}`} role="status">{feedbackMessage}</div>}<form className="form-grid" onSubmit={onSubmitFeedback}><div className="field"><label htmlFor="feedback-content">Feedback</label><textarea id="feedback-content" value={feedbackContent} onChange={(event) => onFeedbackContent(event.target.value)} maxLength={5000} required placeholder="Share clear, actionable notes…" /></div><div className="field"><label htmlFor="feedback-rating">Rating <span className="muted small">(optional, 1–5)</span></label><input id="feedback-rating" value={feedbackRating} onChange={(event) => onFeedbackRating(event.target.value)} type="number" min="1" max="5" step="1" /></div><button className="btn btn-primary" type="submit" disabled={feedbackBusy}>{feedbackBusy ? "Saving…" : feedback ? "Update feedback" : "Save feedback"}</button></form></article>}{canRequest && <article className="card"><h3>Feedback request</h3><p className="muted small">Ask the assigned instructor to complete feedback. Sending is authorized by the API.</p>{requestMessage && <div className={`alert ${requestMessage === "Feedback request queued." ? "alert-success" : "alert-error"}`} role="status">{requestMessage}</div>}<button className="btn btn-secondary" type="button" onClick={onRequestFeedback} disabled={requestBusy || Boolean(feedback)}>{requestBusy ? "Queueing…" : feedback ? "Feedback already exists" : "Request feedback"}</button></article>}{!canWrite && <div className="notice">You can read this feedback, but your current store role does not allow editing it.</div>}</div></div>}</section>;
+  return <section><div className="back-link"><button className="btn-link" type="button" onClick={onBack}>← Back to lessons</button></div>{loading && <div className="spinner">Loading lesson…</div>}{error && <div className="alert alert-error" role="alert">{error}</div>}{!loading && !error && lesson && <div className="detail-layout"><div className="detail-stack"><article className="card"><div className="page-heading" style={{ marginBottom: 0 }}><div><h2>Lesson detail</h2><p className="muted small">{lesson.id}</p></div><StatusPill value={firstString(lesson.status, lesson.state) || "UNKNOWN"} /></div><dl className="detail-list"><dt>Starts</dt><dd>{formatDate(lesson.startAt || lesson.lessonDate)}</dd><dt>Ends</dt><dd>{formatDate(lesson.endAt)}</dd><dt>Member</dt><dd>{displayName(lesson.member || asRecord(lesson.memberInfo))}</dd><dt>Instructor</dt><dd>{displayName(lesson.instructor || asRecord(lesson.professor))}</dd><dt>Store</dt><dd>{displayName(lesson.store || asRecord(lesson.storeInfo), lesson.storeId || "—")}</dd></dl></article><article className="card"><div className="page-heading" style={{ marginBottom: 0 }}><div><h3>Feedback</h3><p className="muted small">Current feedback status</p></div><StatusPill value={feedback?.status} fallback={feedback ? "Written" : "Not written"} /></div>{feedback ? <><p className="feedback-content">{feedback.content || "No written content."}</p><p className="muted small">{formatDate(feedback.updatedAt || feedback.createdAt)}</p></> : <p className="muted">No feedback has been submitted for this lesson.</p>}</article></div><div className="detail-stack">{canWrite && <article className="card"><h3>{feedback ? "Update feedback" : "Write feedback"}</h3><p className="muted small">The API validates lesson status, assignment, and completion before saving.</p>{feedbackMessage && <div className={`alert ${feedbackMessage === "Feedback saved." ? "alert-success" : "alert-error"}`} role="status">{feedbackMessage}</div>}<form className="form-grid" onSubmit={onSubmitFeedback}><div className="field"><label htmlFor="feedback-content">Feedback</label><textarea id="feedback-content" value={feedbackContent} onChange={(event) => onFeedbackContent(event.target.value)} maxLength={5000} required placeholder="Share clear, actionable notes…" /></div><button className="btn btn-primary" type="submit" disabled={feedbackBusy}>{feedbackBusy ? "Saving…" : feedback ? "Update feedback" : "Save feedback"}</button></form></article>}{canRequest && <article className="card"><h3>Feedback request</h3><p className="muted small">Ask the assigned instructor to complete feedback. Sending is authorized by the API.</p>{requestMessage && <div className={`alert ${requestMessage === "Feedback request queued." ? "alert-success" : "alert-error"}`} role="status">{requestMessage}</div>}<button className="btn btn-secondary" type="button" onClick={onRequestFeedback} disabled={requestBusy || Boolean(feedback)}>{requestBusy ? "Queueing…" : feedback ? "Feedback already exists" : "Request feedback"}</button></article>}{!canWrite && <div className="notice">You can read this feedback, but your current store role does not allow editing it.</div>}</div></div>}</section>;
 }
