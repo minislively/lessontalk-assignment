@@ -1,0 +1,96 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lessontalk}
+      POSTGRES_USER: ${POSTGRES_USER:-lessontalk}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lessontalk}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lessontalk} -d ${POSTGRES_DB:-lessontalk}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [lessontalk]
+
+  external-systems:
+    build:
+      context: ./lessontalk-assignment-external-systems
+    environment:
+      NODE_ENV: production
+    volumes:
+      - ./lessontalk-assignment-external-systems/config:/app/config:ro
+    ports:
+      - "8800:8800"
+      - "8801:8801"
+      - "8802:8802"
+      - "8803:8803"
+      - "8804:8804"
+    expose:
+      - "8800"
+      - "8801"
+      - "8802"
+      - "8803"
+      - "8804"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8800/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      start_period: 5s
+      retries: 10
+    networks: [lessontalk]
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER:-lessontalk}:${POSTGRES_PASSWORD:-lessontalk}@db:5432/${POSTGRES_DB:-lessontalk}
+      VENDOR_A_URL: http://external-systems:8801
+      VENDOR_B_URL: http://external-systems:8802
+      VENDOR_C_URL: http://external-systems:8803
+      MESSAGING_URL: http://external-systems:8804
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      JWT_SECRET: ${JWT_SECRET:-local-development-only}
+    ports:
+      - "${API_HOST_PORT:-3001}:3001"
+    depends_on:
+      db:
+        condition: service_healthy
+      external-systems:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      start_period: 15s
+      retries: 20
+    networks: [lessontalk]
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [lessontalk]
+
+volumes:
+  postgres-data:
+
+networks:
+  lessontalk:
+    name: lessontalk

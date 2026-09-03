@@ -128,3 +128,79 @@ UI/UX의 시각적 완성도는 평가하지 않습니다. 스타일링은 최�
 
 설계 결정에 정답은 없습니다. 트레이드오프를 인식하고 설명할 수 있으면 충분합니다.  
 결과물 자체의 완성도보다는 요구사항을 어떻게 해석하고,구현 과정에서 어떤 판단을 내렸는지를 중요하게 봅니다.
+
+## 7. 구현 설계
+
+### 기술 스택
+
+- API: Node.js + TypeScript 기반 모듈형 모놀리스
+- Web: Next.js
+- Database: PostgreSQL + Prisma
+- 실행: Docker Compose
+
+별도 Worker, Redis, Kafka를 두지 않고 API 프로세스의 주기 작업과 PostgreSQL 상태 테이블로 동기화·메시지 작업을 관리합니다. 과제 규모에서 인프라 복잡도를 줄이면서 재시도, 멱등성, 발송 상태를 DB에 남길 수 있기 때문입니다.
+
+백엔드는 NestJS 권장안 대신 Node.js HTTP 서버를 선택했습니다. 이 과제의 API 표면이 작고 외부 연동·상태 머신의 핵심 로직을 프레임워크 추상화 없이 명시적으로 보여주는 편이 구현 의도와 실패 처리를 설명하기 쉽기 때문입니다. TypeScript 모듈 경계와 서비스 함수로 도메인을 분리해 NestJS로 교체할 수 있는 구조를 유지합니다.
+
+### 프로젝트 구조
+
+```text
+apps/api/                              # API, 인증, 동기화, 피드백, 메시지
+apps/web/                              # Next.js 웹 화면
+prisma/schema.prisma                   # 도메인 모델과 제약 조건
+prisma/seed.ts                         # 테스트 계정과 초기 매장
+lessontalk-assignment-external-systems/ # 제공된 외부 시스템, 수정 금지
+```
+
+### 외부 예약 데이터 수집
+
+VENDOR_A, VENDOR_B, VENDOR_C의 API 차이는 Adapter 경계에서 처리하고 API 내부에는 표준 레슨 모델만 전달합니다.
+
+- VENDOR_A: camelCase JSON, `pageInfo.totalPage`, ISO8601
+- VENDOR_B: XML, `hasNextPage`, `YYYYMMDD`, `cancelYn`
+- VENDOR_C: UPPER_SNAKE JSON, POST, `totalPageCount`, `STATE`
+
+오늘과 내일을 5분마다 매장·날짜 단위로 수집합니다. 502, 타임아웃, 네트워크 오류는 요청당 총 3회까지 재시도하고, 400/404/413 및 응답 형식 오류는 재시도하지 않습니다. 모든 페이지가 성공적으로 수집된 경우에만 동기화 완료로 기록합니다.
+
+B/C의 날짜와 시간은 `Asia/Seoul` 현지 시각으로 해석하고 UTC로 저장합니다. VENDOR_C의 알 수 없는 상태값은 원본 상태와 함께 `UNKNOWN`으로 저장하며 피드백 및 메시지 대상에서 제외합니다. 완전한 동기화에서 사라진 예약은 `SOURCE_MISSING`으로 보존하고, 실패·불완전 동기화에서는 기존 레슨을 변경하지 않습니다.
+
+예약의 고유 키는 `(vendor, externalBookingId)`입니다. 사용자 식별에는 정규화한 전화번호를 사용하며, 이름은 외부 표기 변동 때문에 사용하지 않습니다. 예약 수집만으로 매장 membership이나 권한을 자동 부여하지 않습니다.
+
+### 인증과 권한
+
+사용자는 매장별 `OWNER`, `INSTRUCTOR`, `MEMBER` membership을 가집니다. 한 사용자가 여러 매장에 소속될 수 있으며 매장 접근은 항상 membership으로 확인합니다.
+
+- 회원: 자신의 레슨과 피드백만 조회
+- 프로: 담당 레슨 조회 및 담당 종료 레슨 피드백 작성
+- 점주: 소속 매장의 전체 레슨 조회 및 피드백 작성
+
+JWT 세션은 HttpOnly, SameSite=Lax 쿠키로 전송하고 localStorage에는 저장하지 않습니다. 로컬 HTTP에서는 `COOKIE_SECURE=false`, 운영 HTTPS에서는 Secure 쿠키를 사용합니다. 브라우저 요청은 credential을 포함하고 API는 허용된 Origin과 CSRF 토큰을 검증합니다. ID 기반 API는 URL 매장과 실제 리소스 매장이 일치하는지 확인한 뒤 서비스 계층에서 membership과 역할을 검증합니다.
+
+### 피드백과 메시지
+
+`endAt`이 현재 시각보다 이전이고 취소·미확인·소스 누락 상태가 아닌 레슨만 피드백 작성 대상입니다. 담당 프로와 해당 매장 점주만 작성할 수 있고 회원은 읽기만 가능합니다.
+
+메시지 요청은 레슨당 하나의 멱등 키를 가집니다. 외부 Messaging 서버의 `202`와 `ACCEPTED`는 접수 또는 처리 대기이므로 재발송하지 않습니다. 명시적인 502는 미접수로 보고 재시도하고, `FAILED`만 제한적으로 재발송합니다. 타임아웃이나 응답 유실은 수락 여부를 알 수 없으므로 `RECONCILE_REQUIRED`로 남기고 reference key로 확인하기 전까지 자동 재발송하지 않습니다.
+
+### 실행 방법
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+- Web: http://localhost:3000
+- API health: http://localhost:3001/health
+- External Swagger: http://localhost:8800
+
+시드 계정의 비밀번호는 모두 `password123`입니다.
+
+| 역할 | 이름 | 전화번호 |
+|---|---|---|
+| 회원 | 한지우 | `010-0000-0001` |
+| 프로 | 박프로 | `010-9000-0503` |
+| 점주 | 점주 | `010-9000-0001` |
+
+### 테스트와 알려진 제한
+
+Adapter 변환·페이지네이션·상태 변환·전화번호·권한·피드백 종료 조건을 단위 테스트로 검증하고, PostgreSQL 및 외부 시스템을 포함한 통합 흐름을 검증합니다. 외부 Messaging 서버가 재기동되어 접수 이력을 잃은 모호한 발송은 중복 발송보다 안전한 `RECONCILE_REQUIRED` 상태로 남깁니다.

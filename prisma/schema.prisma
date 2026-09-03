@@ -1,0 +1,253 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Vendor {
+  VENDOR_A
+  VENDOR_B
+  VENDOR_C
+}
+
+enum MembershipRole {
+  OWNER
+  INSTRUCTOR
+  MEMBER
+}
+
+enum PersonType {
+  MEMBER
+  INSTRUCTOR
+}
+
+enum LessonStatus {
+  RESERVED
+  CHECKED_IN
+  CANCELED
+  UNKNOWN
+  SOURCE_MISSING
+}
+
+enum SyncRunStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum FeedbackRequestStatus {
+  PENDING
+  SENDING
+  ACCEPTED
+  RETRY_WAIT
+  DELIVERED
+  SUPPRESSED
+  RECONCILE_REQUIRED
+  EXHAUSTED
+}
+
+enum MessageAttemptStatus {
+  SENDING
+  ACCEPTED
+  DELIVERED
+  FAILED
+  UNKNOWN
+  CLOSED
+}
+
+model User {
+  id                    String                    @id @default(cuid())
+  name                  String
+  phoneNormalized       String                    @unique
+  passwordHash          String
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+  memberships           Membership[]
+  memberLessons         Lesson[]                  @relation("memberLessons")
+  instructorLessons      Lesson[]                  @relation("instructorLessons")
+  feedbacks             Feedback[]
+  identities            ExternalPersonIdentity[]
+  sessions              Session[]
+}
+
+model Session {
+  id          String   @id @default(cuid())
+  tokenHash   String   @unique
+  userId      String
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Store {
+  id               String       @id @default(cuid())
+  vendor           Vendor
+  externalStoreId  String
+  name             String
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  memberships      Membership[]
+  lessons          Lesson[]
+  syncTargets      SyncTarget[]
+
+  @@unique([vendor, externalStoreId])
+}
+
+model Membership {
+  id            String         @id @default(cuid())
+  userId        String
+  storeId       String
+  effectiveRole MembershipRole
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  store         Store          @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, storeId])
+  @@index([storeId, effectiveRole])
+}
+
+model ExternalPersonIdentity {
+  id              String     @id @default(cuid())
+  vendor          Vendor
+  personType      PersonType
+  externalId      String?
+  phoneNormalized  String
+  displayName     String?
+  userId          String?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  user            User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@unique([vendor, personType, externalId])
+  @@index([vendor, personType, phoneNormalized])
+  @@index([vendor, personType, externalId])
+}
+
+model Lesson {
+  id                    String       @id @default(cuid())
+  storeId               String
+  vendor                Vendor
+  externalBookingId     String
+  memberUserId          String?
+  instructorUserId      String?
+  memberNameSnapshot    String
+  memberPhoneSnapshot   String
+  instructorNameSnapshot String
+  instructorPhoneSnapshot String
+  startAt               DateTime
+  endAt                 DateTime
+  status                LessonStatus
+  rawStatus             String
+  firstSeenAt           DateTime     @default(now())
+  lastSyncedAt          DateTime     @default(now())
+  lastCompleteTargetAt DateTime?
+  sourceMissingAt       DateTime?
+  sourceCancelReason    String?
+  store                 Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  memberUser            User?        @relation("memberLessons", fields: [memberUserId], references: [id], onDelete: SetNull)
+  instructorUser        User?        @relation("instructorLessons", fields: [instructorUserId], references: [id], onDelete: SetNull)
+  feedback              Feedback?
+  feedbackRequest       FeedbackRequest?
+
+  @@unique([vendor, externalBookingId])
+  @@index([storeId, startAt])
+  @@index([memberUserId, startAt])
+  @@index([instructorUserId, startAt])
+}
+
+model Feedback {
+  id          String   @id @default(cuid())
+  lessonId    String   @unique
+  authorUserId String
+  content     String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lesson      Lesson   @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  author      User     @relation(fields: [authorUserId], references: [id], onDelete: Restrict)
+}
+
+model SyncTarget {
+  id               String       @id @default(cuid())
+  vendor           Vendor
+  storeId          String
+  lessonDate       String
+  leaseOwner       String?
+  leaseUntil       DateTime?
+  lastStartedAt    DateTime?
+  lastCompletedAt  DateTime?
+  lastComplete     Boolean      @default(false)
+  pagesFetched     Int          @default(0)
+  retryCount       Int          @default(0)
+  error            String?
+  store            Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  runs             SyncRun[]
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@unique([vendor, storeId, lessonDate])
+  @@index([leaseUntil])
+}
+
+model SyncRun {
+  id             String        @id @default(cuid())
+  targetId       String
+  status         SyncRunStatus
+  pagesFetched   Int           @default(0)
+  lessonsSeen    Int           @default(0)
+  lessonsCreated Int           @default(0)
+  lessonsUpdated Int           @default(0)
+  complete       Boolean       @default(false)
+  failureReason  String?
+  startedAt      DateTime      @default(now())
+  completedAt    DateTime?
+  target         SyncTarget    @relation(fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@index([targetId, startedAt])
+}
+
+model FeedbackRequest {
+  id                  String                 @id @default(cuid())
+  lessonId            String                 @unique
+  referenceKey        String                 @unique
+  recipientPhone      String
+  message             String
+  status               FeedbackRequestStatus @default(PENDING)
+  nextAttemptAt       DateTime?
+  leaseOwner          String?
+  leaseUntil          DateTime?
+  reason              String?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  lesson              Lesson                 @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  attempts            MessageAttempt[]
+
+  @@index([status, nextAttemptAt])
+  @@index([leaseUntil])
+}
+
+model MessageAttempt {
+  id                String                @id @default(cuid())
+  feedbackRequestId String
+  attemptNo         Int
+  status            MessageAttemptStatus  @default(SENDING)
+  providerMessageId String?
+  submittedAt       DateTime?
+  resolvedAt        DateTime?
+  nextPollAt        DateTime?
+  reason            String?
+  leaseOwner        String?
+  leaseUntil        DateTime?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  feedbackRequest   FeedbackRequest      @relation(fields: [feedbackRequestId], references: [id], onDelete: Cascade)
+
+  @@unique([feedbackRequestId, attemptNo])
+  @@index([status, nextPollAt])
+}
