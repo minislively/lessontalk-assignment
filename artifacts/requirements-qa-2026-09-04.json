@@ -1,0 +1,37 @@
+{
+  "date": "2026-09-04",
+  "kind": "api-package-test-report",
+  "environment": {
+    "web": "http://localhost:3000",
+    "api": "http://localhost:3002",
+    "external": "http://localhost:8800-8804",
+    "database": "PostgreSQL via Docker Compose"
+  },
+  "summary": {"passed": 30, "failed": 0},
+  "checks": [
+    "API and all external health endpoints",
+    "Member, instructor, and owner login plus memberships",
+    "Member lesson visibility and foreign-store denial",
+    "Reserved lesson status filtering",
+    "Invalid calendar date rejection",
+    "Missing Origin and missing CSRF rejection",
+    "Owner sync response and store scoping",
+    "API unit/integration tests, builds, and external contract tests",
+    "Web typecheck/build and Docker Compose service health"
+  ],
+  "commands": [
+    "python3 /tmp/lessontalk_requirements_qa.py",
+    "npm --prefix apps/api run test",
+    "API_BASE_URL=http://localhost:3002 npm --prefix apps/api run test:integration",
+    "npm --prefix apps/api run build",
+    "npm --prefix apps/web run typecheck",
+    "npm --prefix apps/web run build",
+    "npm --prefix lessontalk-assignment-external-systems run test:sample",
+    "docker compose ps",
+    "curl http://localhost:3002/health"
+  ],
+  "notes": [
+    "API host port 3001 was occupied, so the Compose API was exposed on host port 3002 for this run.",
+    "The supplied external systems were not modified."
+  ]
+}
