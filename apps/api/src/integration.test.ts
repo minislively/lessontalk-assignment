@@ -33,6 +33,11 @@ test('tenant and input validation reject unsafe requests', async () => {
   const foreign = await fetch(`${base}/stores/A-1002/lessons`, { headers: { cookie: session.cookie } });
   assert.equal(foreign.status, 403);
 
+  const filtered = await fetch(`${base}/stores/A-1001/lessons?status=RESERVED`, { headers: { cookie: session.cookie } });
+  assert.equal(filtered.status, 200);
+  const filteredPayload = await filtered.json() as { lessons: Array<{ status: string }> };
+  assert.ok(filteredPayload.lessons.every((lesson) => lesson.status === 'RESERVED'));
+
   const invalidDate = await fetch(`${base}/stores/A-1001/lessons?date=2026-13-45`, { headers: { cookie: session.cookie } });
   assert.equal(invalidDate.status, 400);
 
@@ -45,4 +50,23 @@ test('tenant and input validation reject unsafe requests', async () => {
 
   const missingCsrf = await fetch(`${base}/auth/logout`, { method: 'POST', headers: { cookie: session.cookie, origin: 'http://localhost:3000' } });
   assert.equal(missingCsrf.status, 403);
+
+  const missingOrigin = await fetch(`${base}/auth/logout`, { method: 'POST', headers: { cookie: session.cookie, 'x-csrf-token': session.csrf } });
+  assert.equal(missingOrigin.status, 403);
+});
+
+test('feedback rejects a null JSON body with a client error', async () => {
+  const session = await login('010-9000-0001');
+  const stores = await fetch(`${base}/stores`, { headers: { cookie: session.cookie } });
+  const store = (await stores.json() as { stores: Array<{ id: string }> }).stores[0];
+  const lessonsResponse = await fetch(`${base}/stores/${store.id}/lessons`, { headers: { cookie: session.cookie } });
+  const lessons = (await lessonsResponse.json() as { lessons: Array<{ id: string; endAt: string; status: string }> }).lessons;
+  const lesson = lessons.find((item) => item.status === 'RESERVED' && new Date(item.endAt).getTime() < Date.now());
+  assert.ok(lesson);
+  const response = await fetch(`${base}/lessons/${lesson.id}/feedback`, {
+    method: 'POST',
+    headers: { cookie: session.cookie, origin: 'http://localhost:3000', 'x-csrf-token': session.csrf, 'content-type': 'application/json' },
+    body: 'null',
+  });
+  assert.equal(response.status, 400);
 });
