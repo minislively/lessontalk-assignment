@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { URL, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
@@ -18,6 +18,7 @@ const prisma = new PrismaClient();
 const scrypt = promisify(scryptCallback);
 const PORT = Number(process.env.PORT ?? 3000);
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS ?? 7 * 24 * 60 * 60 * 1000);
+const JWT_SECRET = process.env.JWT_SECRET ?? 'local-development-only';
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true' || (process.env.NODE_ENV === 'production' && process.env.COOKIE_SECURE !== 'false');
 const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN;
 const COOKIE_NAME = process.env.COOKIE_NAME ?? 'lessontalk_session';
@@ -80,6 +81,25 @@ async function verifyPassword(password: string, encoded: string): Promise<boolea
 }
 
 function tokenHash(value: string): string { return createHash('sha256').update(value).digest('hex'); }
+function base64Url(value: string | Buffer): string { return Buffer.from(value).toString('base64url'); }
+function createJwt(subject: string, sessionId: string, expiresAt: number, jti: string): string {
+  const header = base64Url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const payload = base64Url(JSON.stringify({ sub: subject, sid: sessionId, exp: Math.floor(expiresAt / 1000), jti }));
+  const unsigned = `${header}.${payload}`;
+  const signature = base64Url(createHmac('sha256', JWT_SECRET).update(unsigned).digest());
+  return `${unsigned}.${signature}`;
+}
+function verifyJwt(token: string): { sub: string; sid: string; exp: number; jti: string } | null {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const expected = base64Url(createHmac('sha256', JWT_SECRET).update(`${parts[0]}.${parts[1]}`).digest());
+  if (parts[2] !== expected) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    if (typeof payload.sub !== 'string' || typeof payload.sid !== 'string' || typeof payload.jti !== 'string' || typeof payload.exp !== 'number' || payload.exp <= Math.floor(Date.now() / 1000)) return null;
+    return payload;
+  } catch { return null; }
+}
 function escapeCookie(value: string): string { return encodeURIComponent(value); }
 function cookieHeader(name: string, value: string, maxAge: number, httpOnly: boolean): string {
   const attrs = [`${name}=${escapeCookie(value)}`, 'Path=/', 'SameSite=Lax', `Max-Age=${maxAge}`];
@@ -149,9 +169,11 @@ async function body(req: IncomingMessage): Promise<any> {
 async function authenticate(req: IncomingMessage): Promise<AuthContext | null> {
   const raw = parseCookies(req)[COOKIE_NAME];
   if (!raw) return null;
-  const session = await prisma.session.findUnique({ where: { tokenHash: tokenHash(raw), }, include: { user: true } });
+  const jwt = verifyJwt(raw);
+  if (!jwt) return null;
+  const session = await prisma.session.findUnique({ where: { id: jwt.sid }, include: { user: true } });
   if (!session) return null;
-  if (session.expiresAt <= new Date()) {
+  if (session.expiresAt <= new Date() || session.tokenHash !== tokenHash(jwt.jti)) {
     await prisma.session.delete({ where: { id: session.id } }).catch(() => undefined);
     return null;
   }
@@ -159,9 +181,11 @@ async function authenticate(req: IncomingMessage): Promise<AuthContext | null> {
 }
 
 async function createSession(user: AuthUser): Promise<string> {
-  const raw = randomBytes(32).toString('base64url');
-  await prisma.session.create({ data: { tokenHash: tokenHash(raw), userId: user.id, expiresAt: new Date(Date.now() + SESSION_TTL_MS) } });
-  return raw;
+  const jti = randomBytes(32).toString('base64url');
+  const sessionId = randomBytes(18).toString('hex');
+  const expiresAt = Date.now() + SESSION_TTL_MS;
+  await prisma.session.create({ data: { id: sessionId, tokenHash: tokenHash(jti), userId: user.id, expiresAt: new Date(expiresAt) } });
+  return createJwt(user.id, sessionId, expiresAt, jti);
 }
 async function requireAuth(req: IncomingMessage, res: ServerResponse): Promise<AuthContext | null> {
   const auth = await authenticate(req);
