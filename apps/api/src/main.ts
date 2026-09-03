@@ -124,7 +124,7 @@ function applyCors(req: IncomingMessage, res: ServerResponse) {
 }
 function checkOrigin(req: IncomingMessage): boolean {
   const origin = requestOrigin(req);
-  return !origin || ALLOWED_ORIGINS.includes(origin);
+  return Boolean(origin && ALLOWED_ORIGINS.includes(origin));
 }
 function checkCsrf(req: IncomingMessage): boolean {
   const cookies = parseCookies(req);
@@ -650,14 +650,15 @@ async function route(req: IncomingMessage, res: ServerResponse) {
     if (lesson.endAt >= new Date()) { sendError(res, 409, 'feedback is available after lesson end'); return; }
     if (([LessonStatus.CANCELED, LessonStatus.UNKNOWN, LessonStatus.SOURCE_MISSING] as string[]).includes(lesson.status)) { sendError(res, 409, 'lesson status does not allow feedback'); return; }
     if (!lesson.lastCompleteTargetAt || lesson.lastCompleteTargetAt < lesson.endAt) { sendError(res, 409, 'lesson data is not freshly synchronized'); return; }
-    const input = await body(req); const content = String(input.content ?? '').trim(); if (!content || content.length > 10_000) { sendError(res, 400, 'content is required and must be at most 10000 characters'); return; }
+    const input = await body(req); if (!input || typeof input !== 'object' || Array.isArray(input)) { sendError(res, 400, 'request body must be an object'); return; }
+    const content = String(input.content ?? '').trim(); if (!content || content.length > 10_000) { sendError(res, 400, 'content is required and must be at most 10000 characters'); return; }
     try {
       const feedback = req.method === 'POST'
         ? await prisma.feedback.create({ data: { lessonId: lesson.id, authorUserId: auth.user.id, content } })
         : lesson.feedback ? await prisma.feedback.update({ where: { id: lesson.feedback.id }, data: { content } }) : await prisma.feedback.create({ data: { lessonId: lesson.id, authorUserId: auth.user.id, content } });
       await prisma.feedbackRequest.updateMany({ where: { lessonId: lesson.id, status: { in: [FeedbackRequestStatus.PENDING, FeedbackRequestStatus.RETRY_WAIT, FeedbackRequestStatus.SENDING] } }, data: { status: FeedbackRequestStatus.SUPPRESSED, reason: 'FEEDBACK_EXISTS', leaseOwner: null, leaseUntil: null } });
       send(res, req.method === 'POST' ? 201 : 200, { feedback });
-    } catch (error) { sendError(res, 409, error instanceof Error ? error.message : 'feedback already exists'); }
+    } catch { sendError(res, 409, 'feedback already exists or was changed concurrently'); }
     return;
   }
   sendError(res, 404, 'not found');

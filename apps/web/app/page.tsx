@@ -338,6 +338,10 @@ export default function HomePage() {
       }));
       if (activeScopeRef.current === cacheScope) setFeedbackByLesson(Object.fromEntries(feedbackEntries));
     } catch (error) {
+      if (activeScopeRef.current === cacheScope) {
+        setLessons([]);
+        setFeedbackByLesson({});
+      }
       handleApiError(error, setLessonsError);
     } finally {
       setLessonsLoading(false);
@@ -547,7 +551,7 @@ export default function HomePage() {
               <div><h2>Lessons</h2><p className="muted">{activeMembership?.storeName || activeStoreId} · {effectiveRole || "membership pending"}</p></div>
               <div className="stats"><div className="stat"><strong>{lessons.length}</strong><span>visible lessons</span></div><div className="stat"><strong>{lessons.filter((lesson) => feedbackByLesson[lesson.id]).length}</strong><span>with feedback</span></div></div>
             </div>
-            <div className="actions" style={{ marginBottom: 17 }}><label className="field" style={{ display: "flex", alignItems: "center", flexDirection: "row", gap: 8 }}><span className="muted small">Status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All lessons</option><option value="RESERVED">Reserved</option><option value="CHECKED_IN">Checked in</option><option value="COMPLETED">Completed</option><option value="CANCELED">Canceled</option></select></label><button className="btn btn-secondary" type="button" onClick={() => { cacheRef.current.clear(); void loadLessons(); }} disabled={lessonsLoading}>Refresh</button></div>
+            <div className="actions" style={{ marginBottom: 17 }}><label className="field" style={{ display: "flex", alignItems: "center", flexDirection: "row", gap: 8 }}><span className="muted small">Status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All lessons</option><option value="RESERVED">Reserved</option><option value="CHECKED_IN">Checked in</option><option value="UNKNOWN">Unknown</option><option value="SOURCE_MISSING">Source missing</option><option value="CANCELED">Canceled</option></select></label><button className="btn btn-secondary" type="button" onClick={() => { cacheRef.current.clear(); void loadLessons(); }} disabled={lessonsLoading}>Refresh</button></div>
             {lessonsError && <div className="alert alert-error" role="alert">{lessonsError}</div>}
             {lessonsLoading && <div className="spinner">Loading lessons…</div>}
             {!lessonsLoading && lessons.length === 0 && !lessonsError && <div className="empty"><h3>No lessons found</h3><p className="muted">There are no lessons for this store and filter yet.</p></div>}
