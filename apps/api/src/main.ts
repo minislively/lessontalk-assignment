@@ -300,9 +300,14 @@ async function upsertIdentity(tx: any, vendor: Vendor, personType: PersonType, e
   let user = await tx.user.findUnique({ where: { phoneNormalized: phone } });
   const where = externalId ? { vendor, personType, externalId } : undefined;
   const existing = where ? await tx.externalPersonIdentity.findFirst({ where }) : await tx.externalPersonIdentity.findFirst({ where: { vendor, personType, phoneNormalized: phone } });
+  if (existing?.userId && user && existing.userId !== user.id) {
+    await tx.externalPersonIdentity.update({ where: { id: existing.id }, data: { phoneNormalized: phone, displayName: name, linkStatus: 'CONFLICT' } });
+    return null;
+  }
   if (existing?.userId) user = await tx.user.findUnique({ where: { id: existing.userId } });
-  if (existing) await tx.externalPersonIdentity.update({ where: { id: existing.id }, data: { phoneNormalized: phone, displayName: name, userId: user?.id ?? null } });
-  else await tx.externalPersonIdentity.create({ data: { vendor, personType, externalId: externalId ?? null, phoneNormalized: phone, displayName: name, userId: user?.id ?? null } });
+  const linkStatus = user ? 'LINKED' : 'UNLINKED';
+  if (existing) await tx.externalPersonIdentity.update({ where: { id: existing.id }, data: { phoneNormalized: phone, displayName: name, userId: user?.id ?? null, linkStatus } });
+  else await tx.externalPersonIdentity.create({ data: { vendor, personType, externalId: externalId ?? null, phoneNormalized: phone, displayName: name, userId: user?.id ?? null, linkStatus } });
   return user?.id ?? null;
 }
 async function ensureStore(vendor: Vendor, externalStoreId: string, name: string) {
@@ -311,8 +316,9 @@ async function ensureStore(vendor: Vendor, externalStoreId: string, name: string
 
 async function syncTarget(vendor: Vendor, store: { id: string; externalStoreId: string }, lessonDate: string): Promise<{ complete: boolean; lessons: number }> {
   const now = new Date();
+  const leaseToken = randomBytes(16).toString('hex');
   const target = await prisma.syncTarget.upsert({ where: { vendor_storeId_lessonDate: { vendor, storeId: store.id, lessonDate } }, update: {}, create: { vendor, storeId: store.id, lessonDate } });
-  const claimed = await prisma.syncTarget.updateMany({ where: { id: target.id, OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }] }, data: { leaseOwner: SYNC_WORKER_ID, leaseUntil: new Date(now.getTime() + 60_000), lastStartedAt: now, lastComplete: false, error: null } });
+  const claimed = await prisma.syncTarget.updateMany({ where: { id: target.id, OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }] }, data: { leaseOwner: SYNC_WORKER_ID, leaseToken, leaseUntil: new Date(now.getTime() + 60_000), leaseVersion: { increment: 1 }, lastStartedAt: now, lastComplete: false, error: null } });
   if (claimed.count !== 1) return { complete: false, lessons: 0 };
   const run = await prisma.syncRun.create({ data: { targetId: target.id, status: SyncRunStatus.RUNNING } });
   try {
@@ -345,14 +351,14 @@ async function syncTarget(vendor: Vendor, store: { id: string; externalStoreId: 
       }
       await tx.feedbackRequest.updateMany({ where: { status: { in: [FeedbackRequestStatus.PENDING, FeedbackRequestStatus.RETRY_WAIT, FeedbackRequestStatus.SENDING] }, lesson: { vendor, storeId: store.id, startAt: { gte: start, lt: end }, status: LessonStatus.SOURCE_MISSING } }, data: { status: FeedbackRequestStatus.SUPPRESSED, reason: 'SOURCE_MISSING', leaseOwner: null, leaseUntil: null } });
       const pagesFetched = Number((lessons as any).pagesFetched ?? 1);
-      await tx.syncTarget.update({ where: { id: target.id }, data: { leaseOwner: null, leaseUntil: null, lastCompletedAt: completeAt, lastComplete: true, pagesFetched, retryCount: 0, error: null } });
+      await tx.syncTarget.updateMany({ where: { id: target.id, leaseOwner: SYNC_WORKER_ID, leaseToken }, data: { leaseOwner: null, leaseToken: null, leaseUntil: null, lastCompletedAt: completeAt, lastComplete: true, pagesFetched, retryCount: 0, error: null } });
       await tx.syncRun.update({ where: { id: run.id }, data: { status: SyncRunStatus.COMPLETED, pagesFetched, lessonsSeen: lessons.length, lessonsCreated: created, lessonsUpdated: lessons.length - created, complete: true, completedAt: completeAt } });
     });
     await ensureFeedbackRequests(store.id, lessonDate);
     return { complete: true, lessons: lessons.length };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await prisma.syncTarget.update({ where: { id: target.id }, data: { leaseOwner: null, leaseUntil: null, lastComplete: false, error: message, retryCount: { increment: 1 } } }).catch(() => undefined);
+    await prisma.syncTarget.updateMany({ where: { id: target.id, leaseOwner: SYNC_WORKER_ID, leaseToken }, data: { leaseOwner: null, leaseToken: null, leaseUntil: null, lastComplete: false, error: message, retryCount: { increment: 1 } } }).catch(() => undefined);
     await prisma.syncRun.update({ where: { id: run.id }, data: { status: SyncRunStatus.FAILED, failureReason: message, complete: false, completedAt: new Date() } }).catch(() => undefined);
     return { complete: false, lessons: 0 };
   }
@@ -472,6 +478,14 @@ async function pollAcceptedAttempts(storeIds?: string[]): Promise<number> {
 }
 async function processMessaging(storeIds?: string[]): Promise<number> {
   await pollAcceptedAttempts(storeIds);
+  await prisma.feedbackRequest.updateMany({
+    where: {
+      ...(storeIds ? { lesson: { storeId: { in: storeIds } } } : {}),
+      status: FeedbackRequestStatus.SENDING,
+      leaseUntil: { lt: new Date() },
+    },
+    data: { status: FeedbackRequestStatus.RETRY_WAIT, leaseOwner: null, leaseUntil: null, nextAttemptAt: new Date(), reason: 'CLAIM_EXPIRED' },
+  });
   const requests = await prisma.feedbackRequest.findMany({ where: { ...(storeIds ? { lesson: { storeId: { in: storeIds } } } : {}), status: { in: [FeedbackRequestStatus.PENDING, FeedbackRequestStatus.RETRY_WAIT] }, OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: new Date() } }] }, include: { lesson: { include: { feedback: true } } } });
   let processed = 0;
   for (const request of requests) {
@@ -486,7 +500,7 @@ async function reconcileMessageRequest(requestId: string): Promise<{ status: str
   if (!request) throw new Error('feedback request not found');
   if (request.status !== FeedbackRequestStatus.RECONCILE_REQUIRED) return { status: request.status, matches: 0 };
   const matches: any[] = [];
-  for (let page = 1; page <= 100; page += 1) {
+  for (let page = 1; page <= 10_000; page += 1) {
     const raw = await externalFetch(`${MESSAGING_URL}/messages?page=${page}`);
     if (!raw || !Array.isArray(raw.list) || !raw.pageInfo) throw new ExternalError(0, 'malformed message history');
     matches.push(...raw.list.filter((item: any) => item.referenceKey === request.referenceKey && normalizeKoreanPhone(String(item.recipientPhone ?? '')) === request.recipientPhone && String(item.message ?? '') === request.message));
