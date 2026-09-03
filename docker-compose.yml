@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-lessontalk}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lessontalk}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -24,11 +24,11 @@ services:
     volumes:
       - ./lessontalk-assignment-external-systems/config:/app/config:ro
     ports:
-      - "8800:8800"
-      - "8801:8801"
-      - "8802:8802"
-      - "8803:8803"
-      - "8804:8804"
+      - "127.0.0.1:8800:8800"
+      - "127.0.0.1:8801:8801"
+      - "127.0.0.1:8802:8802"
+      - "127.0.0.1:8803:8803"
+      - "127.0.0.1:8804:8804"
     expose:
       - "8800"
       - "8801"
@@ -59,7 +59,7 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       JWT_SECRET: ${JWT_SECRET:-local-development-only}
     ports:
-      - "${API_HOST_PORT:-3001}:3001"
+      - "127.0.0.1:${API_HOST_PORT:-3001}:3001"
     depends_on:
       db:
         condition: service_healthy
@@ -82,7 +82,7 @@ services:
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       api:
         condition: service_healthy
